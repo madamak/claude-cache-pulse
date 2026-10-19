@@ -1,0 +1,56 @@
+{
+  "name": "cache-pulse",
+  "description": "Prompt-cache status for Claude Code: a countdown above the prompt (and in the terminal footer), the tokens at stake and what a cold restart costs, cache breaks with their likely cause, session cache totals, a Keep warm button with an optional capped auto-warm, and an expiry warning.",
+  "version": "0.2.0",
+  "author": {
+    "name": "Adam Makhlouf"
+  },
+  "keywords": [
+    "prompt-cache",
+    "cache",
+    "cost",
+    "usage-limits",
+    "statusline",
+    "desktop",
+    "mod"
+  ],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "cacheTtl": {
+      "type": "string",
+      "title": "Prompt-cache TTL",
+      "description": "auto: the TTL the API reports for the session's cache writes (1h on a subscription, 5m on the API or in usage overage). 1h or 5m pins it.",
+      "default": "auto",
+      "options": [
+        "auto",
+        "1h",
+        "5m"
+      ]
+    },
+    "cacheWarning": {
+      "type": "boolean",
+      "title": "Warn before the cache expires",
+      "description": "A toast 5 minutes before a 1h cache expires (1 minute for 5m), and a notification through your terminal's notification channel where there is one. With keepWarm auto, only once the auto-warm cap is reached.",
+      "default": true
+    },
+    "keepWarm": {
+      "type": "string",
+      "title": "Keep the cache warm",
+      "description": "button: a Keep warm button in the band. auto: warm by itself before expiry, up to keepWarmMax times in a row without a prompt from you. Each warm is one cache read of the whole context and counts toward your usage limits.",
+      "default": "button",
+      "options": [
+        "button",
+        "auto",
+        "off"
+      ]
+    },
+    "keepWarmMax": {
+      "type": "number",
+      "title": "Auto-warm cap",
+      "description": "How many auto-warms in a row, with no prompt from you in between, before it stops and notifies you.",
+      "default": 3
+    }
+  },
+  "license": "MIT",
+  "repository": "https://github.com/madamak/claude-cache-pulse"
+}

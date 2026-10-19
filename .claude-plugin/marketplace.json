@@ -1,0 +1,16 @@
+{
+  "name": "claude-cache-pulse",
+  "owner": {
+    "name": "Adam Makhlouf"
+  },
+  "metadata": {
+    "description": "Cache Pulse: prompt-cache status for Claude Code."
+  },
+  "plugins": [
+    {
+      "name": "cache-pulse",
+      "source": "./",
+      "description": "Prompt-cache countdown, cold-restart cost, cache-break detection and session cache totals, with Keep warm — Claude Code only"
+    }
+  ]
+}

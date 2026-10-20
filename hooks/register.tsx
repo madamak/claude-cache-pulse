@@ -40,19 +40,24 @@ import {
   warnMs,
 } from './lib'
 
-const lastTurn = atom({ plugin: 'cache-pulse', key: 'lastTurn' } as const, null)
+// The conversation's cache and its history: a /clear starts them over
+// (session.end).
 const cacheAnchor = atom({ plugin: 'cache-pulse', key: 'cacheAnchor' } as const, null)
-const isWorking = atom({ plugin: 'cache-pulse', key: 'isWorking' } as const, false)
+const lastTurn = atom({ plugin: 'cache-pulse', key: 'lastTurn' } as const, null)
 const compactions = atom({ plugin: 'cache-pulse', key: 'compactions' } as const, 0)
-const tick = atom({ plugin: 'cache-pulse', key: 'tick' } as const, 0)
-const toasted = atom({ plugin: 'cache-pulse', key: 'toasted' } as const, [])
 const warm = atom({ plugin: 'cache-pulse', key: 'warm' } as const, null)
-const warming = atom({ plugin: 'cache-pulse', key: 'warming' } as const, false)
-const detectedTtl = atom({ plugin: 'cache-pulse', key: 'ttl' } as const, null)
 const ledger = atom({ plugin: 'cache-pulse', key: 'ledger' } as const, EMPTY_LEDGER)
 const lastRequest = atom({ plugin: 'cache-pulse', key: 'lastRequest' } as const, null)
 const lastBreak = atom({ plugin: 'cache-pulse', key: 'cacheBreak' } as const, null)
 const lastPrint = atom({ plugin: 'cache-pulse', key: 'lastPrint' } as const, null)
+
+// Kept across a /clear: the TTL is the account's, and the rest only
+// describes the moment (a turn or a ping running, the tick, toasts shown).
+const detectedTtl = atom({ plugin: 'cache-pulse', key: 'ttl' } as const, null)
+const isWorking = atom({ plugin: 'cache-pulse', key: 'isWorking' } as const, false)
+const warming = atom({ plugin: 'cache-pulse', key: 'warming' } as const, false)
+const tick = atom({ plugin: 'cache-pulse', key: 'tick' } as const, 0)
+const toasted = atom({ plugin: 'cache-pulse', key: 'toasted' } as const, [])
 
 const TICK_MS = 15_000
 const LIMIT_THRESHOLDS = [80, 95]
@@ -340,14 +345,16 @@ export const register: Register = (on, options) => {
 
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') {
-      await update($, cacheAnchor, () => null)
-      await update($, lastTurn, () => null)
-      await update($, compactions, () => 0)
-      await update($, warm, () => null)
-      await update($, ledger, () => EMPTY_LEDGER)
-      await update($, lastRequest, () => null)
-      await update($, lastBreak, () => null)
-      await update($, lastPrint, () => null)
+      // Each atom of the first group above, named one by one: validate reads
+      // the keys a module writes off its source, and a loop hides them.
+      await update($, cacheAnchor, () => cacheAnchor.initial)
+      await update($, lastTurn, () => lastTurn.initial)
+      await update($, compactions, () => compactions.initial)
+      await update($, warm, () => warm.initial)
+      await update($, ledger, () => ledger.initial)
+      await update($, lastRequest, () => lastRequest.initial)
+      await update($, lastBreak, () => lastBreak.initial)
+      await update($, lastPrint, () => lastPrint.initial)
     }
 
     return next(e)

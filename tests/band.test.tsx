@@ -549,6 +549,36 @@ test('the last turn shows its cache hit, and no model', async ($, on) => {
   await ui.unmount()
 })
 
+test('a /clear starts the conversation over and keeps the TTL', async ($, on) => {
+  mock.clock(on, { now: 10 * HOUR })
+  on('session.usage', () => ({ value: { startedAt: 9 * HOUR, context: { window: 200_000 }, rateLimits: [] } }))
+  on('session.turns', () => ({ value: 2 }))
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Box } = $.ui.resolve(e)
+
+    return <Box />
+  })
+  on('turn.complete', (_$, e) => ({ text: e.answer }))
+  on('classic.PreModelSwitch', () => ({}))
+  on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
+  await $.turn.complete({
+    turnId: 't',
+    reason: 'answer',
+    answer: 'done',
+    durationMs: 1_000,
+    isAborted: false,
+    usage: { ...use(99_000, 1_000, 0), model: 'claude-opus-5-5' },
+  })
+  await $.classic.PreModelSwitch({ cache_ttl: '5m' } as never)
+  await $.session.end({ reason: 'clear', sessionId: 'id' } as never)
+
+  const ui = await $.ui.mount({ plugin: 'cache-pulse', surface: 'desktop', component: 'AbovePrompt', props: BAND_PROPS })
+  expect(await ui.find({ type: 'Text', text: 'waiting for a turn' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Cache hit/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: '/ 5m' })).toBeDefined()
+  await ui.unmount()
+})
+
 test('a failed auto-warm is tried once, and the expiry warning still comes', { options: { keepWarm: 'auto', keepWarmMax: 3 } }, async ($, on) => {
   const clock = mock.clock(on, { now: 10 * HOUR })
   mock.env(on, { HOME: '/h' })

@@ -12,7 +12,7 @@ import {
   cacheState,
   cacheTone,
   cacheTitle,
-  coldRatio,
+  coldLine,
   EMPTY_LEDGER,
   fmtDur,
   fmtTokens,
@@ -26,6 +26,7 @@ import {
   levelTone,
   limitLabel,
   meterSvg,
+  metaLine,
   missCause,
   PING,
   promptTokens,
@@ -35,6 +36,7 @@ import {
   THEME,
   transcriptPath,
   ttlMs,
+  warmedLine,
   warnMs,
 } from './lib'
 
@@ -400,6 +402,7 @@ export const register: Register = (on, options) => {
     const stake = previous?.stake ?? null
     const totals = ledgerLine(await read($, ledger), compactCount, last?.hitRate ?? null)
     const broke = await read($, lastBreak)
+    const isWarmingNow = await read($, warming)
     const prompts = await $.session.turns()
     const usage = await $.session.usage()
 
@@ -420,7 +423,6 @@ export const register: Register = (on, options) => {
         <Text color={THEME[levelTone(percent)]}>{blocks(percent)}</Text>
       )
 
-    const isWarmingNow = await read($, warming)
     const cacheLabel = isWarmingNow ? 'Cache warming' : cacheTitle(s)
     const cacheText = isWarmingNow ? 'resending the last request' : cacheDetail(s, ttl)
     // A warming fork draws as a live turn; a hot cache well before its
@@ -448,9 +450,7 @@ export const register: Register = (on, options) => {
           {stake !== null && s.kind !== 'cold' ? ` · ${fmtTokens(stake)} tokens` : ''}
         </Text>
         {stake !== null && s.kind === 'cold' && !isWarmingNow ? (
-          <Text color="warning">
-            next prompt rewrites {fmtTokens(stake)} tokens: ≈{Math.floor(coldRatio(ttl, previous?.model ?? ''))}× the API cost of a warm prompt
-          </Text>
+          <Text color="warning">{coldLine(stake, ttl, previous?.model ?? '')}</Text>
         ) : null}
         {isWarmingNow ? (
           <Text dimColor>Warming…</Text>
@@ -475,23 +475,9 @@ export const register: Register = (on, options) => {
         </Box>
       ))
 
-    const meta = [
-      usage.cost ? `$${usage.cost.usd.toFixed(2)}` : null,
-      `${prompts} prompt${prompts === 1 ? '' : 's'}`,
-      fmtDur(now - usage.startedAt),
-    ]
-      .filter(x => x !== null)
-      .join(' · ')
-
     const detail = [
       totals ? <Text dimColor>{totals}</Text> : null,
-      warmed ? (
-        <Text dimColor>
-          Warmed {fmtDur(now - warmed.at)} ago
-          {warmed.hitRate !== null ? ` · ${Math.round(warmed.hitRate * 100)}% hit` : ''}
-          {keepWarm === 'auto' ? ` · auto ${warmed.count}/${keepWarmMax}` : ''}
-        </Text>
-      ) : null,
+      warmed ? <Text dimColor>{warmedLine(warmed, now, keepWarm === 'auto' ? keepWarmMax : null)}</Text> : null,
     ].filter(x => x !== null)
 
     return (
@@ -500,7 +486,7 @@ export const register: Register = (on, options) => {
           <Box flexDirection="row" alignItems="center" columnGap={3} flexWrap="wrap">
             {[cache, ...limits]}
           </Box>
-          <Text dimColor>{meta}</Text>
+          <Text dimColor>{metaLine(usage.cost?.usd ?? null, prompts, now - usage.startedAt)}</Text>
         </Box>
         {detail.length > 0 ? (
           <Box flexDirection="row" columnGap={2} flexWrap="wrap">

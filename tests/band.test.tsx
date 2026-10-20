@@ -3,6 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import {
   cacheState,
   cacheTone,
+  coldLine,
   coldRatio,
   breakText,
   EMPTY_LEDGER,
@@ -13,12 +14,14 @@ import {
   lastWriteTtl,
   ledgerLine,
   levelTone,
+  metaLine,
   missCause,
   PING,
   requestChanges,
   tally,
   transcriptPath,
   ttlMs,
+  warmedLine,
 } from '../hooks/lib'
 
 const HOUR = 60 * 60_000
@@ -55,6 +58,19 @@ test('durations and token counts format', async () => {
   expect(coldRatio(HOUR, 'claude-fable-5-1')).toBe(80)
   expect(coldRatio(HOUR, 'claude-opus-5')).toBe(20)
   expect(coldRatio(HOUR, '')).toBe(20)
+})
+
+test('the band\'s own lines read as the README shows them', async () => {
+  expect(coldLine(182_400, HOUR, 'claude-sonnet-5-5')).toBe(
+    'next prompt rewrites 182k tokens: ≈20× the API cost of a warm prompt',
+  )
+  // 12.5× rounds down: the band never overstates the ratio.
+  expect(coldLine(90_000, 5 * 60_000, '')).toBe('next prompt rewrites 90k tokens: ≈12× the API cost of a warm prompt')
+  const w = { at: 0, hitRate: 0.981, count: 1, isAuto: true }
+  expect(warmedLine(w, 2 * 60_000, 3)).toBe('Warmed 2m ago · 98% hit · auto 1/3')
+  expect(warmedLine({ ...w, hitRate: null }, 2 * 60_000, null)).toBe('Warmed 2m ago')
+  expect(metaLine(3.4, 12, 2 * HOUR)).toBe('$3.40 · 12 prompts · 2h')
+  expect(metaLine(null, 1, 30_000)).toBe('1 prompt · 30s')
 })
 
 const use = (read: number, written: number, input = 10, output = 500) => ({

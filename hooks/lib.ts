@@ -1,6 +1,6 @@
 import type { ModelUsage, ThemeKey } from 'claude-code'
 
-import type { Break, Fingerprint, LastRequest, Ledger, MissCause } from '../types'
+import type { Break, Fingerprint, LastRequest, Ledger, MissCause, Warm } from '../types'
 
 export type CacheState =
   | { kind: 'none' }
@@ -311,6 +311,26 @@ export function tally(l: Ledger, u: ModelUsage, cause: MissCause | null): Ledger
     breaks: l.breaks + (cause === 'break' ? 1 : 0),
     breakTokens: l.breakTokens + (cause === 'break' ? rewritten : 0),
   }
+}
+
+// `next prompt rewrites 182k tokens: ≈20× the API cost of a warm prompt`
+export function coldLine(stake: number, ttl: number, model: string): string {
+  return `next prompt rewrites ${fmtTokens(stake)} tokens: ≈${Math.floor(coldRatio(ttl, model))}× the API cost of a warm prompt`
+}
+
+// `Warmed 2m ago · 98% hit · auto 1/3`: the cap only in auto mode.
+export function warmedLine(w: Warm, now: number, autoMax: number | null): string {
+  const hit = w.hitRate !== null ? ` · ${Math.round(w.hitRate * 100)}% hit` : ''
+  const auto = autoMax !== null ? ` · auto ${w.count}/${autoMax}` : ''
+
+  return `Warmed ${fmtDur(now - w.at)} ago${hit}${auto}`
+}
+
+// `$3.40 · 12 prompts · 2h`: the cost only where the engine reports one.
+export function metaLine(usd: number | null, prompts: number, ageMs: number): string {
+  return [usd !== null ? `$${usd.toFixed(2)}` : null, plural(prompts, 'prompt'), fmtDur(ageMs)]
+    .filter(x => x !== null)
+    .join(' · ')
 }
 
 function plural(n: number, word: string): string {

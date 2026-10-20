@@ -28,7 +28,7 @@ The band answers one question: what happens if you come back later?
 
 ```
 ◔ Cache hot  47m left / 1h · 182k tokens                 [Keep warm]     $3.40 · 12 prompts · 2h
-  Session 96% from cache · 1 cold start (180k rewritten)
+  Session 96% from cache · 1 cold start (180k rewritten) · Last turn 2m · 99% cache hit
   ⚠ Cache break: the request read back 7k of the previous 182k-token prompt while warm and rewrote 175k. The cause is not visible to the mod.
 ```
 
@@ -40,7 +40,7 @@ The band answers one question: what happens if you come back later?
 - **Cold cache**: `next prompt rewrites 182k tokens: ≈20× the API cost of a warm prompt`. At API list prices a cache write costs 2× base input for a 1h entry (1.25× for 5m) and a read 0.1×, so a cold restart costs about 20× a warm prompt (12× for 5m). How a subscription weighs cache tokens against its usage limits is not published, so the band gives the ratio, not a price.
 - **Session totals**: the share of input read from cache, cold starts and cache breaks with the tokens they rewrote, compactions.
 - **Cache break**: a request that lost a warm cache (see below), until your next prompt. A toast says it as it happens.
-- **Warmed** after a Keep warm: when, and how much of it was read from cache.
+- **Last turn**: its duration and the share of its input read from cache, where the session totals give that share since the start; **Warmed** after a Keep warm.
 - **Cost, prompt count, session age** on the right.
 - **5h usage limit** only at 70% or more. The weekly limit stays out of the band: a toast at 80% and 95% covers every limit.
 

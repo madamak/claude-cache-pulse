@@ -487,3 +487,28 @@ test('an MCP server connecting mid-session is not named as the cause', async ($,
   expect(await ui.find({ type: 'Text', text: /linear/ })).toBeUndefined()
   await ui.unmount()
 })
+
+test('the last turn shows its duration and cache hit, and no model', async ($, on) => {
+  mock.clock(on, { now: 10 * HOUR })
+  on('session.usage', () => ({ value: { startedAt: 9 * HOUR, context: { window: 200_000 }, rateLimits: [] } }))
+  on('session.turns', () => ({ value: 2 }))
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Box } = $.ui.resolve(e)
+
+    return <Box />
+  })
+  on('turn.complete', (_$, e) => ({ text: e.answer }))
+  await $.turn.complete({
+    turnId: 't',
+    reason: 'answer',
+    answer: 'done',
+    durationMs: 120_000,
+    isAborted: false,
+    usage: { ...use(99_000, 1_000, 0), model: 'claude-opus-5-5' },
+  })
+
+  const ui = await $.ui.mount({ plugin: 'cache-pulse', surface: 'desktop', component: 'AbovePrompt', props: BAND_PROPS })
+  expect(await ui.find({ type: 'Text', text: 'Last turn 2m · 99% cache hit' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /opus/ })).toBeUndefined()
+  await ui.unmount()
+})

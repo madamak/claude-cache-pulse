@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Elements, EngineInterface, Register } from 'claude-code'
 
 import type { ModelUsage } from 'claude-code'
-import type { Break, DetectedTtl, Fingerprint, Warm } from '../types'
+import type { Break, DetectedTtl, Fingerprint, LastTurn, Warm } from '../types'
 import type { CacheState, TtlName } from './lib'
 import {
   blocks,
@@ -37,6 +37,7 @@ import {
   warnMs,
 } from './lib'
 
+const lastTurn = atom({ plugin: 'cache-pulse', key: 'lastTurn' } as const, null)
 const cacheAnchor = atom({ plugin: 'cache-pulse', key: 'cacheAnchor' } as const, null)
 const isWorking = atom({ plugin: 'cache-pulse', key: 'isWorking' } as const, false)
 const compactions = atom({ plugin: 'cache-pulse', key: 'compactions' } as const, 0)
@@ -304,6 +305,8 @@ export const register: Register = (on, options) => {
     await update($, warm, () => null)
     if (e.usage) {
       const usage = e.usage
+      const turn: LastTurn = { endedAt: now, durationMs: e.durationMs, hitRate: hitRate(usage) }
+      await update($, lastTurn, () => turn)
       await update($, cacheAnchor, () => now)
       // The reply's row lands in the transcript as the turn ends: read it
       // once it is written. A usage-overage switch to 5m shows up here.
@@ -333,6 +336,7 @@ export const register: Register = (on, options) => {
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') {
       await update($, cacheAnchor, () => null)
+      await update($, lastTurn, () => null)
       await update($, compactions, () => 0)
       await update($, warm, () => null)
       await update($, ledger, () => EMPTY_LEDGER)
@@ -386,6 +390,7 @@ export const register: Register = (on, options) => {
     const now = await $.clock.now()
     const working = e.props.isWorking || (await read($, isWorking))
     const s = cacheState(await read($, cacheAnchor), working, now, ttl)
+    const last = await read($, lastTurn)
     const compactCount = await read($, compactions)
     const warmed = await read($, warm)
     const stake = (await read($, lastRequest))?.stake ?? null
@@ -480,6 +485,12 @@ export const register: Register = (on, options) => {
 
     const detail = [
       totals ? <Text dimColor>{totals}</Text> : null,
+      last ? (
+        <Text dimColor>
+          Last turn {fmtDur(last.durationMs)}
+          {last.hitRate !== null ? ` · ${Math.round(last.hitRate * 100)}% cache hit` : ''}
+        </Text>
+      ) : null,
       warmed ? (
         <Text dimColor>
           Warmed {fmtDur(now - warmed.at)} ago

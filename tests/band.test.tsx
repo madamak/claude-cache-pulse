@@ -12,6 +12,7 @@ import {
   lastWriteTtl,
   ledgerLine,
   missCause,
+  PING,
   requestChanges,
   tally,
   transcriptPath,
@@ -513,5 +514,100 @@ test('the last turn shows its cache hit, and no model', async ($, on) => {
   const ui = await $.ui.mount({ plugin: 'cache-pulse', surface: 'desktop', component: 'AbovePrompt', props: BAND_PROPS })
   expect(await ui.find({ type: 'Text', text: 'Cache hit: last turn 99%' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /opus/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a failed auto-warm is tried once, and the expiry warning still comes', { options: { keepWarm: 'auto', keepWarmMax: 3 } }, async ($, on) => {
+  const clock = mock.clock(on, { now: 10 * HOUR })
+  mock.env(on, { HOME: '/h' })
+  let forks = 0
+  const toasts: string[] = []
+  const notes: string[] = []
+  on('model.fork', () => {
+    forks += 1
+
+    return {
+      value: {
+        isAnswered: false,
+        reason: 'api-error',
+        status: 529,
+        error: 'overloaded_error',
+        usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      } as never,
+    }
+  })
+  on('ui.toast', (_$, e) => {
+    toasts.push(e.text)
+
+    return { value: undefined }
+  })
+  on('ui.notify', (_$, e) => {
+    notes.push(e.text)
+
+    return { value: { isSent: true, channel: 'terminal_bell' as const } }
+  })
+  on('session.cwd', () => ({ value: '/x' }))
+  on('session.id', () => ({ value: 'id' }))
+  on('process.run', () => ({
+    value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('session.start', () => ({ cwd: '/x' }))
+  on('classic.SessionStart', () => ({}))
+
+  await $.session.start({ cwd: '/x', surface: 'terminal', isInteractive: true })
+  await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: 50 * 60 })
+
+  await clock.advance(6 * 60_000) // 4m left: the auto-warm fails
+  await clock.advance(2 * 60_000) // eight more ticks
+  expect(forks).toBe(1)
+  expect(toasts.filter(t => t.startsWith('Keep-warm failed')).length).toBe(1)
+  expect(notes.length).toBe(1)
+  expect(notes[0]).toContain('Auto-warm failed.')
+})
+
+test('a turn you start while the ping runs still counts, and the ping\'s own does not', async ($, on) => {
+  const clock = mock.clock(on, { now: 10 * HOUR })
+  let release: () => void = () => {}
+  const held = new Promise<void>(resolve => {
+    release = resolve
+  })
+  on('model.fork', async () => {
+    await held
+
+    return {
+      value: {
+        isAnswered: true,
+        text: 'ok',
+        usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 0 },
+      },
+    }
+  })
+  on('session.usage', () => ({ value: { startedAt: 9 * HOUR, context: { window: 200_000 }, rateLimits: [] } }))
+  on('session.turns', () => ({ value: 1 }))
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Box } = $.ui.resolve(e)
+
+    return <Box />
+  })
+  on('classic.SessionStart', () => ({}))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.step', async function* (_$, e) {
+    return { ...step('claude-opus-5-5', e.turnId === 'ping' ? use(0, 50_000) : use(90_000, 1_000)), turnId: e.turnId, index: e.index }
+  })
+  await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: 50 * 60 })
+
+  const ui = await $.ui.mount({ plugin: 'cache-pulse', surface: 'desktop', component: 'AbovePrompt', props: BAND_PROPS })
+  const pressing = ui.press({ key: 'warm' })
+  await clock.settle()
+  // Should the fork raise a turn of its own, it is left out.
+  await $.turn.start({ turnId: 'ping', text: PING })
+  await drain($.turn.step({ turnId: 'ping', index: 0, model: 'claude-opus-5-5', messageCount: 9 }))
+  // Yours, sent while the ping runs.
+  await $.turn.start({ turnId: 'yours', text: 'next question' })
+  await drain($.turn.step({ turnId: 'yours', index: 0, model: 'claude-opus-5-5', messageCount: 9 }))
+  release()
+  await pressing
+  expect(await ui.find({ type: 'Text', text: 'Cache live' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Cache hit: session avg 99%' })).toBeDefined()
   await ui.unmount()
 })

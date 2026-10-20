@@ -64,7 +64,7 @@ Cache Pulse does not guess at the tools or the system prompt. The engine does no
 
 ## Keep warm
 
-**Keep warm** sends one tool-less fork of the main thread's last request (same model, system prompt, tools and messages) with a short "reply ok" message. It reads the whole cached prefix, and a cache read restarts the TTL. The ping is not added to the conversation. The band then shows `Warmed 2m ago · 98% hit`; a low hit rate means the cache had already expired and the ping wrote it again.
+**Keep warm** sends one tool-less fork of the main thread's last request (same model, system prompt, tools and messages) with a short "reply ok" message. It reads the whole cached prefix, and a cache read restarts the TTL. The ping is not added to the conversation. The band then shows `Warmed 2m ago · 98% hit`; a low hit rate means the ping found little in the cache and wrote it again. In auto mode, a ping that fails is not retried before expiry: the expiry warning comes instead.
 
 Each warm costs one cache read of the context plus a few output tokens, and counts toward your usage limits. That is far cheaper than writing the cache again, but holding an idle session warm for hours adds up, so auto mode is capped.
 
@@ -75,7 +75,7 @@ Set them in `/config` or under `pluginConfigs` in `settings.json`.
 | Setting | Default | What it does |
 |---|---|---|
 | `cacheTtl` | `auto` | `auto` follows the TTL the API reports for the session's cache writes (`1h` on a subscription, `5m` on the API or in usage overage), so a switch to 5m mid-session is picked up. `1h` or `5m` pins it. Until the first write is seen, the band assumes 1h and shows `/ 1h?`. |
-| `cacheWarning` | `true` | A toast 5 minutes before a 1h cache expires (1 minute for 5m), plus a notification through your terminal's notification channel where there is one. In `auto` mode, only once the cap is reached. |
+| `cacheWarning` | `true` | A toast 5 minutes before a 1h cache expires (1 minute for 5m), plus a notification through your terminal's notification channel where there is one. In `auto` mode, only once the cap is reached or an auto-warm fails. |
 | `keepWarm` | `button` | `button`: the Keep warm button. `auto`: warm by itself before expiry. `off`: neither. |
 | `keepWarmMax` | `3` | Auto-warms in a row, with no prompt from you in between, before auto mode stops and warns you. |
 
@@ -97,7 +97,7 @@ claude plugin test .
 
 To work on it live, start a session with `claude --plugin-dir .` from this folder.
 
-The tests were last run on Claude Code 2.1.299 (`claude plugin test` needs `ui.notify`, `model.fork` and `turn.step`).
+The tests were last run on Claude Code 2.1.300 (`claude plugin test` needs `ui.notify`, `model.fork` and `turn.step`).
 
 ## License
 

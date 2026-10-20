@@ -10,6 +10,9 @@ export type CacheState =
 
 export type TtlName = '1h' | '5m'
 
+// The keep-warm fork's one message.
+export const PING = 'Cache keep-alive ping from the cache-pulse mod. Reply with the single word: ok'
+
 export function ttlMs(ttl: unknown): number {
   return ttl === '5m' ? 5 * 60_000 : 60 * 60_000
 }

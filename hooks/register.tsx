@@ -28,6 +28,7 @@ import {
   limitLabel,
   meterSvg,
   missCause,
+  PING,
   promptTokens,
   requestChanges,
   ringSvg,
@@ -53,10 +54,20 @@ const lastPrint = atom({ plugin: 'cache-pulse', key: 'lastPrint' } as const, nul
 
 const TICK_MS = 15_000
 const LIMIT_THRESHOLDS = [80, 95]
-const PING = 'Cache keep-alive ping from the cache-pulse mod. Reply with the single word: ok'
 
-// True while a keep-warm fork runs, so its own events are not taken for yours.
+// True while a keep-warm fork runs. The fork is one completion, but should it
+// raise turn events of its own, they are not taken for yours: while it runs,
+// a turn counts only once its start shows it is not the ping.
 let isWarming = false
+const yourTurns = new Set<string>()
+
+function isPingEvent(turnId: string): boolean {
+  return isWarming && !yourTurns.has(turnId)
+}
+
+// The countdown an auto-warm was last tried for: one try each, so a fork that
+// fails is not sent again every tick and the expiry warning still comes.
+let autoTriedFor: number | null = null
 
 // Workaround: the engine hands a mod neither a cache timestamp nor the TTL
 // split of a cache write, but the session transcript stores the API's raw
@@ -162,9 +173,9 @@ async function recordRequest(
 }
 
 // One tool-less fork over the main thread's last request: it reads the whole
-// cached prefix, and a cache read restarts the entry's TTL.
-async function warmCache($: EngineInterface, isAuto: boolean): Promise<void> {
-  if (isWarming || (await read($, isWorking))) return
+// cached prefix, and a cache read restarts the entry's TTL. True once warmed.
+async function warmCache($: EngineInterface, isAuto: boolean): Promise<boolean> {
+  if (isWarming || (await read($, isWorking))) return false
   isWarming = true
   // The fork resends the whole context and takes seconds: show it in the band.
   await update($, warming, () => true)
@@ -172,24 +183,21 @@ async function warmCache($: EngineInterface, isAuto: boolean): Promise<void> {
     const result = await $.model.fork({ prompt: PING })
     if (!result.isAnswered && result.reason === 'nothing-to-fork') {
       $.ui.toast('Nothing to warm yet: no reply in this conversation.')
-      return
+      return false
     }
     const usage = 'usage' in result ? result.usage : undefined
     if (!usage || usage.cache_read_input_tokens + usage.cache_creation_input_tokens === 0) {
       const why = result.isAnswered ? 'no cache was read or written' : result.reason
       $.ui.toast(`Keep-warm failed: ${why}.`)
-      return
+      return false
     }
     const now = await $.clock.now()
     const rate = hitRate(usage)
     await update($, cacheAnchor, () => now)
-    // A ping that read nothing paid the cold start itself.
+    // A ping that read nothing paid the cold start itself: counted whole, so
+    // the session average weighs the write the cold start names.
     if (usage.cache_read_input_tokens === 0) {
-      await update($, ledger, l => ({
-        ...(l ?? EMPTY_LEDGER),
-        coldStarts: (l ?? EMPTY_LEDGER).coldStarts + 1,
-        coldTokens: (l ?? EMPTY_LEDGER).coldTokens + usage.cache_creation_input_tokens,
-      }))
+      await update($, ledger, l => tally(l ?? EMPTY_LEDGER, usage, 'expired'))
     }
     await update($, warm, w => ({
       at: now,
@@ -198,10 +206,12 @@ async function warmCache($: EngineInterface, isAuto: boolean): Promise<void> {
       isAuto,
     }))
     if (usage.cache_read_input_tokens === 0) {
-      $.ui.toast('The cache had already expired: the ping wrote it again.')
+      $.ui.toast('The ping read nothing from the cache: it wrote the whole context again.')
     } else if (!isAuto) {
       $.ui.toast(`Cache warmed: ${Math.round((rate ?? 0) * 100)}% read from cache.`)
     }
+
+    return true
   } finally {
     isWarming = false
     await update($, warming, () => false)
@@ -231,13 +241,14 @@ export const register: Register = (on, options) => {
         if (s.kind !== 'hot' || s.remainingMs > warnMs(ttl)) return
 
         const warms = (await read($, warm))?.count ?? 0
-        if (keepWarm === 'auto' && warms < keepWarmMax) {
-          await warmCache($, true)
-          return
+        if (keepWarm === 'auto' && warms < keepWarmMax && autoTriedFor !== anchor) {
+          autoTriedFor = anchor
+          if (await warmCache($, true)) return
         }
         if (!isWarning) return
-        const capped = keepWarm === 'auto' ? ` Auto-warm stopped after ${warms} in a row.` : ''
-        const text = `Prompt cache expires in ${fmtDur(s.remainingMs)}. Reply now to keep it warm.${capped}`
+        const auto =
+          keepWarm !== 'auto' ? '' : warms < keepWarmMax ? ' Auto-warm failed.' : ` Auto-warm stopped after ${warms} in a row.`
+        const text = `Prompt cache expires in ${fmtDur(s.remainingMs)}. Reply now to keep it warm.${auto}`
         const seen = (await read($, toasted)).includes(`cache:${anchor}`)
         await toastOnce($, `cache:${anchor}`, text)
         if (!seen) await notify($, text)
@@ -272,7 +283,11 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.start', async ($, e, next) => {
-    if (isWarming || e.agentId !== undefined) return next(e)
+    if (e.agentId !== undefined) return next(e)
+    if (isWarming) {
+      if (e.text === PING) return next(e)
+      yourTurns.add(e.turnId)
+    }
     await update($, isWorking, () => true)
     await update($, lastBreak, () => null)
 
@@ -281,7 +296,7 @@ export const register: Register = (on, options) => {
 
   // Each model request of the main thread, with the usage the API reported.
   on('turn.step', async function* ($, e, next) {
-    if (e.agentId !== undefined || isWarming) return yield* next(e)
+    if (e.agentId !== undefined || isPingEvent(e.turnId)) return yield* next(e)
     const ttl = (await ttlOf($, pinned)).ms
     const anchor = await read($, cacheAnchor)
     const isExpired = anchor !== null && (await $.clock.now()) - anchor >= ttl
@@ -297,7 +312,8 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId !== undefined || isWarming) return next(e)
+    if (e.agentId !== undefined || isPingEvent(e.turnId)) return next(e)
+    yourTurns.delete(e.turnId)
 
     const now = await $.clock.now()
     await update($, isWorking, () => false)

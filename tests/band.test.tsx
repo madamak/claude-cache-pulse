@@ -234,7 +234,7 @@ test('a cold cache says what the next prompt rewrites, and the request counts as
   await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: 2 * 3600, context_tokens: 90_000 })
 
   const ui = await $.ui.mount({ plugin: 'cache-pulse', surface: 'desktop', component: 'AbovePrompt', props: BAND_PROPS })
-  expect(await ui.find({ type: 'Text', text: /next prompt rewrites 90k, ≈20× a warm prompt/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /next prompt rewrites 90k tokens: ≈20× the API cost of a warm prompt/ })).toBeDefined()
   await ui.unmount()
 
   await drain($.turn.step({ turnId: 't', index: 0, model: 'claude-opus-5-5', messageCount: 5 }))

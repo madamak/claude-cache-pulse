@@ -1,10 +1,3 @@
-export type LastTurn = {
-  endedAt: number
-  model: string
-  durationMs: number
-  hitRate: number | null
-}
-
 export type Warm = {
   at: number
   hitRate: number | null
@@ -52,7 +45,6 @@ export type Break = { at: number; read: number; prompt: number; written: number;
 declare module 'claude-code' {
   interface PluginState {
     'cache-pulse': {
-      lastTurn: LastTurn | null
       cacheAnchor: number | null
       isWorking: boolean
       compactions: number

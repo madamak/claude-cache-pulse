@@ -2,6 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import {
   cacheState,
+  cacheTone,
   coldRatio,
   breakText,
   EMPTY_LEDGER,
@@ -11,6 +12,7 @@ import {
   lastAssistantAt,
   lastWriteTtl,
   ledgerLine,
+  levelTone,
   missCause,
   PING,
   requestChanges,
@@ -28,6 +30,15 @@ test('cache countdown runs from the last turn to the TTL', async () => {
   expect(cacheState(0, false, HOUR + 1, HOUR).kind).toBe('cold')
   expect(ttlMs('5m')).toBe(5 * 60_000)
   expect(ttlMs(undefined)).toBe(HOUR)
+})
+
+test('a reading earns a color only when it needs attention', async () => {
+  expect(cacheTone(cacheState(0, false, 10 * 60_000, HOUR), HOUR)).toBe('ok')
+  expect(cacheTone(cacheState(0, false, 56 * 60_000, HOUR), HOUR)).toBe('warn')
+  expect(cacheTone(cacheState(0, false, HOUR + 1, HOUR), HOUR)).toBe('bad')
+  expect(cacheTone(cacheState(0, true, 0, HOUR), HOUR)).toBe('live')
+  expect(cacheTone(cacheState(null, false, 0, HOUR), HOUR)).toBe('neutral')
+  expect([69, 70, 89, 90].map(levelTone)).toEqual(['neutral', 'warn', 'warn', 'bad'])
 })
 
 test('durations and token counts format', async () => {

@@ -1,4 +1,4 @@
-import type { ModelUsage } from 'claude-code'
+import type { ModelUsage, ThemeKey } from 'claude-code'
 
 import type { Break, Fingerprint, LastRequest, Ledger, MissCause } from '../types'
 
@@ -100,13 +100,6 @@ export function hitRate(u: ModelUsage): number | null {
   return total > 0 ? u.cache_read_input_tokens / total : null
 }
 
-export function levelColor(percent: number): string {
-  if (percent >= 90) return 'error'
-  if (percent >= 70) return 'warning'
-
-  return 'success'
-}
-
 export function limitLabel(kind: string): string {
   if (kind === 'five_hour') return '5h'
   if (kind === 'seven_day') return '7d'
@@ -118,29 +111,42 @@ export function shortModel(model: string): string {
   return model.replace(/^claude-/, '').replace(/-\d{8}$/, '')
 }
 
+// What a reading says, decided once and drawn two ways: a theme color in
+// the terminal, a fixed hex in the Svg meters.
+export type Tone = 'ok' | 'warn' | 'bad' | 'live' | 'neutral'
+
+export function cacheTone(s: CacheState, ttl: number): Tone {
+  if (s.kind === 'live') return 'live'
+  if (s.kind === 'hot') return s.remainingMs <= warnMs(ttl) ? 'warn' : 'ok'
+  if (s.kind === 'cold') return 'bad'
+
+  return 'neutral'
+}
+
+// Only a high reading earns a color.
+export function levelTone(percent: number): Tone {
+  if (percent >= 90) return 'bad'
+  if (percent >= 70) return 'warn'
+
+  return 'neutral'
+}
+
+export const THEME: Record<Tone, ThemeKey> = {
+  ok: 'success',
+  warn: 'warning',
+  bad: 'error',
+  live: 'suggestion',
+  neutral: 'inactive',
+}
+
 // Inline SVG meters for surfaces that draw Svg (desktop, vscode, mobile).
 // Drawn as images, so the colors are fixed hex that read on light and dark.
-export const HEX = {
+export const HEX: Record<Tone, string> = {
   ok: '#3fb950',
   warn: '#d29922',
   bad: '#f85149',
   live: '#58a6ff',
   neutral: '#8b949e',
-}
-
-export function levelHex(percent: number): string {
-  if (percent >= 90) return HEX.bad
-  if (percent >= 70) return HEX.warn
-
-  return HEX.neutral
-}
-
-export function cacheHex(s: CacheState, ttl: number): string {
-  if (s.kind === 'live') return HEX.live
-  if (s.kind === 'hot') return s.remainingMs <= warnMs(ttl) ? HEX.warn : HEX.ok
-  if (s.kind === 'cold') return HEX.bad
-
-  return HEX.neutral
 }
 
 // What is left of the cache's life, 0 to 1: full while a turn runs.

@@ -3,14 +3,14 @@ import type { Elements, EngineInterface, Register } from 'claude-code'
 
 import type { ModelUsage } from 'claude-code'
 import type { Break, DetectedTtl, Fingerprint, LastTurn, Warm } from '../types'
-import type { CacheState, TtlName } from './lib'
+import type { TtlName } from './lib'
 import {
   blocks,
   breakText,
   cacheDetail,
   cacheFraction,
-  cacheHex,
   cacheState,
+  cacheTone,
   cacheTitle,
   coldRatio,
   EMPTY_LEDGER,
@@ -23,8 +23,7 @@ import {
   lastAssistantAt,
   lastWriteTtl,
   ledgerLine,
-  levelColor,
-  levelHex,
+  levelTone,
   limitLabel,
   meterSvg,
   missCause,
@@ -33,6 +32,7 @@ import {
   requestChanges,
   ringSvg,
   tally,
+  THEME,
   transcriptPath,
   ttlMs,
   warnMs,
@@ -110,19 +110,6 @@ async function ttlOf(
   const found = pinned === null ? await read($, detectedTtl) : null
 
   return { ms: ttlMs(pinned ?? found?.value ?? '1h'), isKnown: pinned !== null || found !== null }
-}
-
-function cacheTheme(s: CacheState, ttl: number): string {
-  if (s.kind === 'live') return 'suggestion'
-  if (s.kind === 'hot') return s.remainingMs <= warnMs(ttl) ? 'warning' : 'success'
-  if (s.kind === 'cold') return 'error'
-
-  return 'inactive'
-}
-
-// Only a high reading earns a color; the rest stays in the text color.
-function alertColor(percent: number): string | undefined {
-  return percent >= 70 ? levelColor(percent) : undefined
 }
 
 async function toastOnce($: EngineInterface, key: string, text: string): Promise<void> {
@@ -424,38 +411,34 @@ export const register: Register = (on, options) => {
     const meter = (label: string, percent: number) =>
       Svg ? (
         <Svg
-          source={meterSvg(percent, levelHex(percent))}
+          source={meterSvg(percent, HEX[levelTone(percent)])}
           alt={`${label} ${percent}%`}
           width={44}
           height={5}
         />
       ) : (
-        <Text color={levelColor(percent)}>{blocks(percent)}</Text>
+        <Text color={THEME[levelTone(percent)]}>{blocks(percent)}</Text>
       )
 
     const isWarmingNow = await read($, warming)
     const cacheLabel = isWarmingNow ? 'Cache warming' : cacheTitle(s)
     const cacheText = isWarmingNow ? 'resending the last request' : cacheDetail(s, ttl)
+    // A warming fork draws as a live turn; a hot cache well before its
+    // warning keeps the label in the text color.
+    const tone = isWarmingNow ? 'live' : cacheTone(s, ttl)
     const cache = (
       <Box flexDirection="row" alignItems="center" columnGap={1}>
         {Svg ? (
           <Svg
-            source={ringSvg(isWarmingNow ? 1 : cacheFraction(s, ttl), isWarmingNow ? HEX.live : cacheHex(s, ttl))}
+            source={ringSvg(isWarmingNow ? 1 : cacheFraction(s, ttl), HEX[tone])}
             alt={`${cacheLabel}, ${cacheText}`}
             width={14}
             height={14}
           />
         ) : (
-          <Text color={isWarmingNow ? 'suggestion' : cacheTheme(s, ttl)}>
-            {isWarmingNow || s.kind === 'hot' || s.kind === 'live' ? '●' : '○'}
-          </Text>
+          <Text color={THEME[tone]}>{isWarmingNow || s.kind === 'hot' || s.kind === 'live' ? '●' : '○'}</Text>
         )}
-        <Text
-          bold
-          color={
-            isWarmingNow ? 'suggestion' : s.kind === 'hot' && s.remainingMs > warnMs(ttl) ? undefined : cacheTheme(s, ttl)
-          }
-        >
+        <Text bold color={tone === 'ok' ? undefined : THEME[tone]}>
           {cacheLabel}
         </Text>
         <Text>{cacheText}</Text>
@@ -485,7 +468,7 @@ export const register: Register = (on, options) => {
         <Box flexDirection="row" alignItems="center" columnGap={1}>
           <Text dimColor>{limitLabel(limit.kind)}</Text>
           {meter(limitLabel(limit.kind), limit.percentUsed)}
-          <Text color={alertColor(limit.percentUsed)}>{limit.percentUsed}%</Text>
+          <Text color={THEME[levelTone(limit.percentUsed)]}>{limit.percentUsed}%</Text>
           {limit.resetsAt ? (
             <Text dimColor>↺ {fmtDur(Date.parse(limit.resetsAt) - now)}</Text>
           ) : null}

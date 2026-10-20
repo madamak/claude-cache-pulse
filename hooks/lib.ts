@@ -17,28 +17,41 @@ export function ttlMs(ttl: unknown): number {
   return ttl === '5m' ? 5 * 60_000 : 60 * 60_000
 }
 
+// What the module reads of a transcript row.
+type Row = {
+  type?: string
+  isSidechain?: boolean
+  timestamp?: string
+  message?: { usage?: { cache_creation?: Record<string, number> } }
+}
+
+// The main thread's assistant rows in a transcript's tail, newest first.
+// `needle` skips the parse of a line that cannot be one of interest.
+function* mainAssistantRows(jsonl: string, needle: string): Generator<Row> {
+  const lines = jsonl.split('\n')
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i]
+    if (!line || !line.includes(needle)) continue
+    let row: Row
+    try {
+      row = JSON.parse(line) as Row
+    } catch {
+      // The tail's first line is usually cut mid-row.
+      continue
+    }
+    if (row.type === 'assistant' && !row.isSidechain) yield row
+  }
+}
+
 // The TTL the newest cache write used, from the API's own usage on the main
 // thread's assistant rows: `cache_creation.ephemeral_1h_input_tokens` or
 // `ephemeral_5m_input_tokens`. A row that only read the cache says nothing,
 // so the scan goes back to the newest row that wrote.
 export function lastWriteTtl(jsonl: string): TtlName | null {
-  const lines = jsonl.split('\n')
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const line = lines[i]
-    if (!line || !line.includes('"cache_creation"')) continue
-    try {
-      const row = JSON.parse(line) as {
-        type?: string
-        isSidechain?: boolean
-        message?: { usage?: { cache_creation?: Record<string, number> } }
-      }
-      if (row.type !== 'assistant' || row.isSidechain) continue
-      const written = row.message?.usage?.cache_creation
-      if ((written?.ephemeral_1h_input_tokens ?? 0) > 0) return '1h'
-      if ((written?.ephemeral_5m_input_tokens ?? 0) > 0) return '5m'
-    } catch {
-      // The tail's first line is usually cut mid-row.
-    }
+  for (const row of mainAssistantRows(jsonl, '"cache_creation"')) {
+    const written = row.message?.usage?.cache_creation
+    if ((written?.ephemeral_1h_input_tokens ?? 0) > 0) return '1h'
+    if ((written?.ephemeral_5m_input_tokens ?? 0) > 0) return '5m'
   }
 
   return null
@@ -205,19 +218,9 @@ export function transcriptPath(configDir: string, cwd: string, sessionId: string
 
 // The time of the main thread's last assistant row in a transcript's tail.
 export function lastAssistantAt(jsonl: string): number | null {
-  const lines = jsonl.split('\n')
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const line = lines[i]
-    if (!line || !line.includes('"assistant"')) continue
-    try {
-      const row = JSON.parse(line) as { type?: string; isSidechain?: boolean; timestamp?: string }
-      if (row.type === 'assistant' && !row.isSidechain && row.timestamp) {
-        const at = Date.parse(row.timestamp)
-        if (!Number.isNaN(at)) return at
-      }
-    } catch {
-      // The tail's first line is usually cut mid-row.
-    }
+  for (const row of mainAssistantRows(jsonl, '"assistant"')) {
+    const at = row.timestamp ? Date.parse(row.timestamp) : Number.NaN
+    if (!Number.isNaN(at)) return at
   }
 
   return null

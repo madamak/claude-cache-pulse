@@ -107,8 +107,14 @@ export function footerLabel(s: CacheState): string {
   }
 }
 
+// The tokens a request was answered over, cached or not.
+export function promptTokens(u: ModelUsage): number {
+  return u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
+}
+
+// The share of a request's prompt read from cache.
 export function hitRate(u: ModelUsage): number | null {
-  const total = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
+  const total = promptTokens(u)
 
   return total > 0 ? u.cache_read_input_tokens / total : null
 }
@@ -251,11 +257,6 @@ export function readRate(model: string): number {
 // never in money.
 export function coldRatio(ttl: number, model: string): number {
   return (ttl <= 5 * 60_000 ? 1.25 : 2) / readRate(model)
-}
-
-// The tokens a request was answered over, cached or not.
-export function promptTokens(u: ModelUsage): number {
-  return u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
 }
 
 // Whether a request lost the cache. Claude Code puts its cache breakpoint at

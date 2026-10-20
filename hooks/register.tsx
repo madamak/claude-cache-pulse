@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Elements, EngineInterface, Register } from 'claude-code'
 
 import type { ModelUsage } from 'claude-code'
-import type { Break, DetectedTtl, Fingerprint, LastTurn, Warm } from '../types'
+import type { Break, Fingerprint } from '../types'
 import type { TtlName } from './lib'
 import {
   blocks,
@@ -105,8 +105,7 @@ async function seedAnchor($: EngineInterface, tail: string | null): Promise<void
 async function detectTtl($: EngineInterface, tail: string | null): Promise<void> {
   const value = tail === null ? null : lastWriteTtl(tail)
   if (value === null) return
-  const found: DetectedTtl = { value, source: 'api' }
-  await update($, detectedTtl, () => found)
+  await update($, detectedTtl, () => ({ value, source: 'api' }))
 }
 
 // The TTL in force: the pinned one, else the detected one, else 1h assumed.
@@ -122,7 +121,7 @@ async function ttlOf(
 async function toastOnce($: EngineInterface, key: string, text: string): Promise<void> {
   const seen = await read($, toasted)
   if (seen.includes(key)) return
-  await update($, toasted, list => [...(list ?? []).slice(-50), key])
+  await update($, toasted, list => [...list.slice(-50), key])
   $.ui.toast(text)
 }
 
@@ -147,7 +146,7 @@ async function recordRequest(
   const before = await read($, lastPrint)
   const prev = await read($, lastRequest)
   const cause = missCause(prev, usage, isExpired)
-  await update($, ledger, l => tally(l ?? EMPTY_LEDGER, usage, cause))
+  await update($, ledger, l => tally(l, usage, cause))
   const prompt = promptTokens(usage)
   await update($, lastRequest, () => ({ prompt, stake: prompt + usage.output_tokens, model }))
   await update($, lastPrint, () => print)
@@ -191,7 +190,7 @@ async function warmCache($: EngineInterface, isAuto: boolean): Promise<boolean> 
     // A ping that read nothing paid the cold start itself: counted whole, so
     // the session average weighs the write the cold start names.
     if (usage.cache_read_input_tokens === 0) {
-      await update($, ledger, l => tally(l ?? EMPTY_LEDGER, usage, 'expired'))
+      await update($, ledger, l => tally(l, usage, 'expired'))
     }
     await update($, warm, w => ({
       at: now,
@@ -228,7 +227,7 @@ export const register: Register = (on, options) => {
     await detectTtl($, tail)
     $.clock.every(TICK_MS, () => {
       void (async () => {
-        await update($, tick, n => (n ?? 0) + 1)
+        await update($, tick, n => n + 1)
         const ttl = (await ttlOf($, pinned)).ms
         const anchor = await read($, cacheAnchor)
         const s = cacheState(anchor, await read($, isWorking), await $.clock.now(), ttl)
@@ -270,8 +269,7 @@ export const register: Register = (on, options) => {
 
   // The engine's own TTL, raised on a model switch.
   on('classic.PreModelSwitch', async ($, e, next) => {
-    const found: DetectedTtl = { value: e.cache_ttl, source: 'engine' }
-    await update($, detectedTtl, () => found)
+    await update($, detectedTtl, () => ({ value: e.cache_ttl, source: 'engine' }))
 
     return next(e)
   })
@@ -315,8 +313,7 @@ export const register: Register = (on, options) => {
     await update($, warm, () => null)
     if (e.usage) {
       const usage = e.usage
-      const turn: LastTurn = { hitRate: hitRate(usage) }
-      await update($, lastTurn, () => turn)
+      await update($, lastTurn, () => ({ hitRate: hitRate(usage) }))
       await update($, cacheAnchor, () => now)
       // The reply's row lands in the transcript as the turn ends: read it
       // once it is written. A usage-overage switch to 5m shows up here.
@@ -333,7 +330,7 @@ export const register: Register = (on, options) => {
   on('session.compact', async ($, e, next) => {
     const result = await next(e)
     if (e.agentId === undefined && !('skip' in result)) {
-      await update($, compactions, n => (n ?? 0) + 1)
+      await update($, compactions, n => n + 1)
       // The summary is a new prefix: nothing of it is cached yet, and the
       // rewrite the next request does is expected.
       await update($, cacheAnchor, () => null)

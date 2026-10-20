@@ -64,16 +64,14 @@ const LIMIT_THRESHOLDS = [80, 95]
 // True while a keep-warm fork runs. The fork is one completion, but should it
 // raise turn events of its own, they are not taken for yours: while it runs,
 // a turn counts only once its start shows it is not the ping.
+// The `warming` atom says the same to the band; this flag is the lock, read
+// and set with no await between, so two presses cannot both send a fork.
 let isWarming = false
 const yourTurns = new Set<string>()
 
 function isPingEvent(turnId: string): boolean {
   return isWarming && !yourTurns.has(turnId)
 }
-
-// The countdown an auto-warm was last tried for: one try each, so a fork that
-// fails is not sent again every tick and the expiry warning still comes.
-let autoTriedFor: number | null = null
 
 // Workaround: the engine hands a mod neither a cache timestamp nor the TTL
 // split of a cache write, but the session transcript stores the API's raw
@@ -226,6 +224,9 @@ export const register: Register = (on, options) => {
     const tail = await transcriptTail($)
     await seedAnchor($, tail)
     await detectTtl($, tail)
+    // The countdown an auto-warm was last tried for: one try each, so a fork
+    // that fails is not sent again every tick and the expiry warning still comes.
+    let autoTriedFor: number | null = null
     $.clock.every(TICK_MS, () => {
       void (async () => {
         await update($, tick, n => n + 1)

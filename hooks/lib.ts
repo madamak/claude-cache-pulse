@@ -209,7 +209,7 @@ export function cacheTitle(s: CacheState): string {
   return 'Cache'
 }
 
-export function cacheDetail(s: CacheState, ttl: number): string {
+export function cacheDetail(s: CacheState): string {
   if (s.kind === 'live') return 'turn running'
   if (s.kind === 'hot') return `${fmtDur(s.remainingMs)} left`
   if (s.kind === 'cold') return `idle ${fmtDur(s.idleMs)}`

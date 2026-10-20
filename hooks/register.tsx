@@ -1,7 +1,6 @@
 import { atom, read, update } from 'claude-code'
-import type { Elements, EngineInterface, Register } from 'claude-code'
+import type { Elements, EngineInterface, ModelUsage, Register } from 'claude-code'
 
-import type { ModelUsage } from 'claude-code'
 import type { Break, Fingerprint } from '../types'
 import type { TtlName } from './lib'
 import {
@@ -118,11 +117,14 @@ async function ttlOf(
   return { ms: ttlMs(pinned ?? found?.value ?? '1h'), isKnown: pinned !== null || found !== null }
 }
 
-async function toastOnce($: EngineInterface, key: string, text: string): Promise<void> {
+// True when it toasted: the first time for this key.
+async function toastOnce($: EngineInterface, key: string, text: string): Promise<boolean> {
   const seen = await read($, toasted)
-  if (seen.includes(key)) return
+  if (seen.includes(key)) return false
   await update($, toasted, list => [...list.slice(-50), key])
   $.ui.toast(text)
+
+  return true
 }
 
 // Through the person's own notification channel, the one Claude Code's own
@@ -137,7 +139,6 @@ async function notify($: EngineInterface, text: string): Promise<void> {
 // and what the request shows changed since the one before.
 async function recordRequest(
   $: EngineInterface,
-  model: string,
   usage: ModelUsage,
   isExpired: boolean,
   print: Fingerprint,
@@ -148,7 +149,7 @@ async function recordRequest(
   const cause = missCause(prev, usage, isExpired)
   await update($, ledger, l => tally(l, usage, cause))
   const prompt = promptTokens(usage)
-  await update($, lastRequest, () => ({ prompt, stake: prompt + usage.output_tokens, model }))
+  await update($, lastRequest, () => ({ prompt, stake: prompt + usage.output_tokens, model: print.model }))
   await update($, lastPrint, () => print)
   // Each request reads and so refreshes the cache.
   await update($, cacheAnchor, () => now)
@@ -242,9 +243,7 @@ export const register: Register = (on, options) => {
         const auto =
           keepWarm !== 'auto' ? '' : warms < keepWarmMax ? ' Auto-warm failed.' : ` Auto-warm stopped after ${warms} in a row.`
         const text = `Prompt cache expires in ${fmtDur(s.remainingMs)}. Reply now to keep it warm.${auto}`
-        const seen = (await read($, toasted)).includes(`cache:${anchor}`)
-        await toastOnce($, `cache:${anchor}`, text)
-        if (!seen) await notify($, text)
+        if (await toastOnce($, `cache:${anchor}`, text)) await notify($, text)
       })()
     })
 
@@ -298,7 +297,7 @@ export const register: Register = (on, options) => {
       messages: e.messageCount,
     }
     const result = yield* next(e)
-    if (result.usage) await recordRequest($, e.model, result.usage, isExpired, print)
+    if (result.usage) await recordRequest($, result.usage, isExpired, print)
 
     return result
   })
@@ -428,7 +427,7 @@ export const register: Register = (on, options) => {
       )
 
     const cacheLabel = isWarmingNow ? 'Cache warming' : cacheTitle(s)
-    const cacheText = isWarmingNow ? 'resending the last request' : cacheDetail(s, ttl)
+    const cacheText = isWarmingNow ? 'resending the last request' : cacheDetail(s)
     // A warming fork draws as a live turn; a hot cache well before its
     // warning keeps the label in the text color.
     const tone = isWarmingNow ? 'live' : cacheTone(s, ttl)

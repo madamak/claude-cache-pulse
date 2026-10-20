@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Elements, EngineInterface, Register } from 'claude-code'
 
-import type { ModelUsage, TurnStepInput } from 'claude-code'
+import type { ModelUsage } from 'claude-code'
 import type { Break, DetectedTtl, Fingerprint, LastTurn, Warm } from '../types'
 import type { CacheState, TtlName } from './lib'
 import {
@@ -14,12 +14,10 @@ import {
   cacheTitle,
   coldRatio,
   EMPTY_LEDGER,
-  explainBreak,
   fmtDur,
   fmtTokens,
   fmtTtl,
   footerLabel,
-  hash,
   HEX,
   hitRate,
   lastAssistantAt,
@@ -31,6 +29,7 @@ import {
   meterSvg,
   missCause,
   promptTokens,
+  requestChanges,
   ringSvg,
   shortModel,
   tally,
@@ -50,7 +49,7 @@ const warming = atom({ plugin: 'cache-pulse', key: 'warming' } as const, false)
 const detectedTtl = atom({ plugin: 'cache-pulse', key: 'ttl' } as const, null)
 const ledger = atom({ plugin: 'cache-pulse', key: 'ledger' } as const, EMPTY_LEDGER)
 const lastRequest = atom({ plugin: 'cache-pulse', key: 'lastRequest' } as const, null)
-const lastBreak = atom({ plugin: 'cache-pulse', key: 'lastBreak' } as const, null)
+const lastBreak = atom({ plugin: 'cache-pulse', key: 'cacheBreak' } as const, null)
 const lastPrint = atom({ plugin: 'cache-pulse', key: 'lastPrint' } as const, null)
 
 const TICK_MS = 15_000
@@ -131,34 +130,8 @@ async function notify($: EngineInterface, text: string): Promise<void> {
   await $.ui.notify(text, { title: 'Claude Code · prompt cache' })
 }
 
-// What the request about to be sent is built from: the session's system
-// prompt as the engine composes it, and the tools the model is offered.
-async function fingerprint($: EngineInterface, e: TurnStepInput): Promise<Fingerprint> {
-  let system: Record<string, number> | null = null
-  let tools: Record<string, number> | null = null
-  try {
-    const { sections } = await $.prompt.compose({ model: e.model })
-    system = Object.fromEntries(sections.map(s => [s.id, hash(s.text)]))
-  } catch {
-    // Not composable here: the system prompt is left out of the comparison.
-  }
-  try {
-    tools = Object.fromEntries((await $.tool.list()).map(t => [t.name, hash(t.description)]))
-  } catch {
-    // Same for the tools.
-  }
-
-  return {
-    model: e.model,
-    effort: e.effort === undefined ? null : String(e.effort),
-    messages: e.messageCount,
-    system,
-    tools,
-  }
-}
-
 // One main-thread request: tallies it, and says when it lost a warm cache
-// and what changed since the request before.
+// and what the request shows changed since the one before.
 async function recordRequest(
   $: EngineInterface,
   model: string,
@@ -168,15 +141,22 @@ async function recordRequest(
 ): Promise<void> {
   const now = await $.clock.now()
   const before = await read($, lastPrint)
-  const cause = missCause(await read($, lastRequest), usage, isExpired)
+  const prev = await read($, lastRequest)
+  const cause = missCause(prev, usage, isExpired)
   await update($, ledger, l => tally(l ?? EMPTY_LEDGER, usage, cause))
   const prompt = promptTokens(usage)
   await update($, lastRequest, () => ({ prompt, stake: prompt + usage.output_tokens, model }))
   await update($, lastPrint, () => print)
   // Each request reads and so refreshes the cache.
   await update($, cacheAnchor, () => now)
-  if (cause === 'break') {
-    const found: Break = { at: now, tokens: usage.cache_creation_input_tokens, causes: explainBreak(before, print) }
+  if (cause === 'break' && prev !== null) {
+    const found: Break = {
+      at: now,
+      read: usage.cache_read_input_tokens,
+      prompt: prev.prompt,
+      written: usage.cache_creation_input_tokens,
+      changes: requestChanges(before, print),
+    }
     await update($, lastBreak, () => found)
     $.ui.toast(breakText(found), { timeoutMs: 10_000 })
   }
@@ -306,7 +286,11 @@ export const register: Register = (on, options) => {
     const ttl = (await ttlOf($, pinned)).ms
     const anchor = await read($, cacheAnchor)
     const isExpired = anchor !== null && (await $.clock.now()) - anchor >= ttl
-    const print = await fingerprint($, e)
+    const print: Fingerprint = {
+      model: e.model,
+      effort: e.effort === undefined ? null : String(e.effort),
+      messages: e.messageCount,
+    }
     const result = yield* next(e)
     if (result.usage) await recordRequest($, e.model, result.usage, isExpired, print)
 

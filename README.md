@@ -29,7 +29,7 @@ The band answers one question: what happens if you come back later?
 ```
 ◔ Cache hot  47m left / 1h · 182k tokens                 [Keep warm]     $3.40 · 12 prompts · 2h
   Session 96% from cache · 1 cold start (180k rewritten) · Last turn opus-5-5 · 2m · 99% cache hit
-  ⚠ Cache break: the last request rewrote 175k while warm. Likely cause: tools changed: added linear (12 tools)
+  ⚠ Cache break: the request read back 7k of the previous 182k-token prompt while warm and rewrote 175k. The cause is not visible to the mod.
 ```
 
 **Prompt footer (terminal)**, next to the model and effort: `cache 47m`, `cache live` while a turn runs, `cache cold` once it has expired. The desktop app does not draw this footer slot; the band carries the same countdown there.
@@ -48,18 +48,19 @@ Colors only appear when something needs attention.
 
 ## Cache breaks
 
-Claude Code puts its cache breakpoint at the end of each request, so the next request reads back about the whole previous prompt. When a request reads back much less (more than 20% of it, and at least 4k tokens) and no compaction explains it, the cache was lost. Past the TTL, it **expired**: a cold start. Otherwise it **broke**, and Cache Pulse names what changed since the request before:
+Claude Code puts its cache breakpoint at the end of each request, so the next request reads back about the whole previous prompt. When a request reads back much less (more than 20% of it, and at least 4k tokens) and no compaction explains it, the cache was lost. Past the TTL, it **expired**: a cold start. Otherwise it **broke**, and Cache Pulse says what it measured, from the usage the API reported: how much of the previous prompt the request read back, and how much it rewrote.
 
-| Cause | How it is seen |
+It then lists what the request itself shows changed since the request before, from `turn.step`:
+
+| Change | How it is seen |
 |---|---|
-| `model changed (opus-5-5 → sonnet-5-5)` | the model the request names |
-| `effort changed (high → max)` | the effort the request asks for |
-| `tools changed: added linear (12 tools); removed …; description of …` | the tools the model is offered (`$.tool.list`), names and descriptions, MCP tools grouped by server |
-| `system prompt changed (env, memory)` | the session's system prompt as the engine composes it (`$.prompt.compose`), section by section |
-| `earlier messages rewritten (rewind or edit)` | the request carries fewer messages than the one before |
-| `no change visible to the mod` | none of the above: messages edited in place (such as old tool results cleared) or an eviction on the server |
+| `model (opus-5-5 → sonnet-5-5)` | the model the request names |
+| `effort (high → max)` | the effort the request asks for |
+| `fewer messages (40 → 12)` | the number of messages the request carries: a rewind or an edit |
 
-Every line is a likely cause, not a proof: the mod compares what it can read before each request, not the request's bytes. Claude Code keeps its own diagnosis (`prompt_cache.last_miss_cause` in the status line's input), but it is not given to mods.
+With none of these, it says `The cause is not visible to the mod.` These are changes the request shows, not a diagnosis: a change listed may not be what lost the cache.
+
+Cache Pulse does not guess at the tools or the system prompt. The engine does not give a mod the tools or the system prompt a request sent: `$.tool.list()` lists the tools the model can call, with short descriptions and no schemas, and `$.prompt.compose()` composes the system prompt again for nobody to send. So a difference the mod sees there may not be in the request, and a change in the request may not show there. Claude Code keeps its own diagnosis (`prompt_cache.last_miss_cause` in the status line's input), but it is not given to mods.
 
 ## Keep warm
 
@@ -83,7 +84,7 @@ Set them in `/config` or under `pluginConfigs` in `settings.json`.
 - **The countdown is an estimate.** It starts when the last main-thread turn ends, which is close to the last cache refresh. It restarts after a compaction (the summary is a new prefix) and does not notice a `/model` switch, which also loses the cache.
 - **The TTL and the mid-session anchor come from the session transcript** in `~/.claude/projects/`. The engine gives a mod only four token counts per reply, while the transcript keeps the API's raw usage, whose `cache_creation` splits each write into `ephemeral_1h_input_tokens` and `ephemeral_5m_input_tokens`. The mod reads the tail after each turn. This depends on Claude Code's folder layout and transcript format and may break after an update; a model switch also reports the engine's own `cache_ttl`, and the `cacheTtl` setting can pin the value.
 - **The expiry warning is a toast in the desktop app.** A mod's notification goes through the terminal's notification channel, the one Claude Code's own notifications use there; a session the desktop app hosts has no terminal, and a mod cannot raise the app's own notifications.
-- **Cache breaks are inferred** from the usage the API reports per request, not read from Claude Code's own ledger, and their causes from what the mod can read before each request. A mod loaded mid-session starts counting, and comparing, from its first request.
+- **Cache breaks are inferred** from the usage the API reports per request, not read from Claude Code's own ledger. Their cause is shown only where the request itself shows a change. A mod loaded mid-session starts counting, and comparing, from its first request.
 
 ## Development
 

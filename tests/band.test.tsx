@@ -3,8 +3,8 @@ import { expect, mock, test } from 'claude-code/testing'
 import {
   cacheState,
   coldRatio,
+  breakText,
   EMPTY_LEDGER,
-  explainBreak,
   fmtDur,
   fmtTokens,
   footerLabel,
@@ -12,6 +12,7 @@ import {
   lastWriteTtl,
   ledgerLine,
   missCause,
+  requestChanges,
   tally,
   transcriptPath,
   ttlMs,
@@ -91,32 +92,23 @@ const BAND_PROPS = {
   view: {},
 } as never
 
-test('a break names what changed since the request before', async () => {
-  const print = {
-    model: 'claude-opus-5-5',
-    effort: 'high',
-    messages: 40,
-    system: { intro: 1, env: 2, memory: 3 },
-    tools: { Bash: 1, Read: 2 },
-  }
-  expect(explainBreak(print, { ...print, model: 'claude-sonnet-5-5' })).toEqual([
-    'model changed (opus-5-5 → sonnet-5-5)',
-  ])
-  expect(explainBreak(print, { ...print, effort: 'max' })).toEqual(['effort changed (high → max)'])
-  expect(
-    explainBreak(print, {
-      ...print,
-      tools: { Bash: 1, Read: 9, mcp__linear__create_issue: 3, mcp__linear__list_issues: 4 },
-    }),
-  ).toEqual(['tools changed: added linear (2 tools); description of Read'])
-  expect(explainBreak(print, { ...print, system: { intro: 1, env: 5, memory: 3 } })).toEqual([
-    'system prompt changed (env)',
-  ])
-  expect(explainBreak(print, { ...print, messages: 12 })).toEqual(['earlier messages rewritten (rewind or edit)'])
-  expect(explainBreak(print, { ...print, messages: 42 })[0]).toMatch(/^no change visible to the mod/)
-  // A section or tool list the mod could not read is left out of the comparison.
-  expect(explainBreak({ ...print, system: null }, { ...print, system: { other: 1 } })[0]).toMatch(/^no change visible/)
-  expect(explainBreak(null, print)).toEqual(['no earlier request to compare with'])
+test('a break lists only what the request shows changed since the one before', async () => {
+  const print = { model: 'claude-opus-5-5', effort: 'high', messages: 40 }
+  expect(requestChanges(print, { ...print, model: 'claude-sonnet-5-5' })).toEqual(['model (opus-5-5 → sonnet-5-5)'])
+  expect(requestChanges(print, { ...print, effort: 'max' })).toEqual(['effort (high → max)'])
+  expect(requestChanges(print, { ...print, messages: 12 })).toEqual(['fewer messages (40 → 12)'])
+  expect(requestChanges(print, { ...print, messages: 42 })).toEqual([])
+  expect(requestChanges(null, print)).toEqual([])
+})
+
+test('a break states what was measured, and no cause it cannot see', async () => {
+  const measured = { at: 0, read: 48_166, prompt: 68_982, written: 23_497 }
+  expect(breakText({ ...measured, changes: [] })).toBe(
+    'Cache break: the request read back 48k of the previous 69k-token prompt while warm and rewrote 23k. The cause is not visible to the mod.',
+  )
+  expect(breakText({ ...measured, changes: ['model (opus-5-5 → sonnet-5-5)'] })).toMatch(
+    /rewrote 23k\. Changed since the previous request: model \(opus-5-5 → sonnet-5-5\)\.$/,
+  )
 })
 
 test('the band leaves out the weekly limit and shows the 5h one only when high', async ($, on) => {
@@ -213,7 +205,9 @@ test('a warm cache lost to a model switch is flagged and counted', async ($, on)
   next = step('claude-sonnet-5-5', use(0, 101_000))
   await drain($.turn.step({ turnId: 't2', index: 0, model: 'claude-sonnet-5-5', messageCount: 3 }))
 
-  expect(toasts.some(t => t.includes('rewrote 101k while warm. Likely cause: model changed (opus-5-5 → sonnet-5-5)'))).toBe(true)
+  expect(toasts).toContain(
+    'Cache break: the request read back 0 of the previous 100k-token prompt while warm and rewrote 101k. Changed since the previous request: model (opus-5-5 → sonnet-5-5).',
+  )
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'cache-pulse', surface, component: 'AbovePrompt', props: BAND_PROPS })
     expect(await ui.find({ type: 'Text', text: /1 cache break \(101k\)/ })).toBeDefined()
@@ -457,7 +451,7 @@ test('the band says it is warming while the fork runs', async ($, on) => {
   await ui.unmount()
 })
 
-test('an MCP server connecting mid-session is named as the cause', async ($, on) => {
+test('an MCP server connecting mid-session is not named as the cause', async ($, on) => {
   const clock = mock.clock(on, { now: 10 * HOUR })
   let tools = [
     { name: 'Bash', description: 'Runs a command', mcp: false },
@@ -488,6 +482,8 @@ test('an MCP server connecting mid-session is named as the cause', async ($, on)
   await drain($.turn.step({ turnId: 't2', index: 0, model: 'claude-opus-5-5', messageCount: 3 }))
 
   const ui = await $.ui.mount({ plugin: 'cache-pulse', surface: 'desktop', component: 'AbovePrompt', props: BAND_PROPS })
-  expect(await ui.find({ type: 'Text', text: /Likely cause: tools changed: added linear \(2 tools\)/ })).toBeDefined()
+  // The mod cannot read the tools the request sent, so it names none.
+  expect(await ui.find({ type: 'Text', text: /The cause is not visible to the mod\./ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /linear/ })).toBeUndefined()
   await ui.unmount()
 })

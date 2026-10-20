@@ -246,79 +246,24 @@ export function missCause(prev: LastRequest | null, u: ModelUsage, isExpired: bo
   return isExpired ? 'expired' : 'break'
 }
 
-// FNV-1a, 32 bits: enough to tell two versions of a section apart.
-export function hash(text: string): number {
-  let h = 0x811c9dc5
-  for (let i = 0; i < text.length; i += 1) {
-    h ^= text.charCodeAt(i)
-    h = Math.imul(h, 0x01000193)
-  }
-
-  return h >>> 0
-}
-
-// `mcp__linear__create_issue` and its siblings read as `linear (3 tools)`.
-function toolNames(names: string[]): string {
-  const servers = new Map<string, number>()
-  const plain: string[] = []
-  for (const name of names) {
-    const server = /^mcp__([^_]+(?:_[^_]+)*?)__/.exec(name)?.[1]
-    if (server) servers.set(server, (servers.get(server) ?? 0) + 1)
-    else plain.push(name)
-  }
-  const parts = [
-    ...[...servers].map(([server, n]) => (n === 1 ? `${server} (1 tool)` : `${server} (${n} tools)`)),
-    ...plain,
-  ]
-
-  return parts.length > 3 ? `${parts.slice(0, 3).join(', ')}, …` : parts.join(', ')
-}
-
-function diffKeys(before: Record<string, number>, after: Record<string, number>) {
-  const keys = (r: Record<string, number>) => Object.keys(r)
-  return {
-    added: keys(after).filter(k => !(k in before)),
-    removed: keys(before).filter(k => !(k in after)),
-    changed: keys(after).filter(k => k in before && before[k] !== after[k]),
-  }
-}
-
-// What changed between two requests, most likely culprit first. Each line
-// names what a mod can see; the engine's own diagnosis is not given to mods.
-export function explainBreak(before: Fingerprint | null, after: Fingerprint): string[] {
-  if (before === null) return ['no earlier request to compare with']
-  const causes: string[] = []
+// What changed between two requests, among what a request shows of itself:
+// the model it names, the effort it asks for, how many messages it carries.
+// The tools and system prompt it sends are not given to mods, so they are
+// never compared: a mod can only recompose them, not read what was sent.
+export function requestChanges(before: Fingerprint | null, after: Fingerprint): string[] {
+  if (before === null) return []
+  const changes: string[] = []
   if (before.model !== after.model) {
-    causes.push(`model changed (${shortModel(before.model)} → ${shortModel(after.model)})`)
+    changes.push(`model (${shortModel(before.model)} → ${shortModel(after.model)})`)
   }
   if (before.effort !== after.effort) {
-    causes.push(`effort changed (${before.effort ?? 'default'} → ${after.effort ?? 'default'})`)
-  }
-  if (before.tools && after.tools) {
-    const d = diffKeys(before.tools, after.tools)
-    const parts = [
-      d.added.length > 0 ? `added ${toolNames(d.added)}` : null,
-      d.removed.length > 0 ? `removed ${toolNames(d.removed)}` : null,
-      d.changed.length > 0 ? `description of ${toolNames(d.changed)}` : null,
-    ].filter(x => x !== null)
-    if (parts.length > 0) causes.push(`tools changed: ${parts.join('; ')}`)
-  }
-  if (before.system && after.system) {
-    const d = diffKeys(before.system, after.system)
-    const ids = [...d.changed, ...d.added, ...d.removed]
-    if (ids.length > 0) {
-      const shown = ids.length > 3 ? `${ids.slice(0, 3).join(', ')}, …` : ids.join(', ')
-      causes.push(`system prompt changed (${shown})`)
-    }
+    changes.push(`effort (${before.effort ?? 'default'} → ${after.effort ?? 'default'})`)
   }
   if (after.messages < before.messages) {
-    causes.push('earlier messages rewritten (rewind or edit)')
-  }
-  if (causes.length === 0) {
-    causes.push('no change visible to the mod: earlier messages edited in place, or evicted server-side')
+    changes.push(`fewer messages (${before.messages} → ${after.messages})`)
   }
 
-  return causes
+  return changes
 }
 
 export const EMPTY_LEDGER: Ledger = {
@@ -364,5 +309,11 @@ export function ledgerLine(l: Ledger, compactions: number): string | null {
 }
 
 export function breakText(b: Break): string {
-  return `Cache break: the last request rewrote ${fmtTokens(b.tokens)} while warm. ${b.causes.length === 1 ? 'Likely cause' : 'Likely causes'}: ${b.causes.join('; ')}`
+  const measured = `Cache break: the request read back ${fmtTokens(b.read)} of the previous ${fmtTokens(b.prompt)}-token prompt while warm and rewrote ${fmtTokens(b.written)}.`
+  const seen =
+    b.changes.length > 0
+      ? `Changed since the previous request: ${b.changes.join('; ')}.`
+      : 'The cause is not visible to the mod.'
+
+  return `${measured} ${seen}`
 }

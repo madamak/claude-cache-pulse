@@ -24,15 +24,12 @@ export type LastRequest = { prompt: number; stake: number; model: string }
 // Why a request lost the cache: past its TTL, or a change before it.
 export type MissCause = 'expired' | 'break'
 
-// What a main-thread request's cached prefix was built from, as far as a mod
-// can see it: section and tool contents are hashed. null where it could not
-// be read.
+// What a main-thread request shows of itself on `turn.step`: the model it
+// names, the effort it asks for, how many messages it carries.
 export type Fingerprint = {
   model: string
   effort: string | null
   messages: number
-  system: Record<string, number> | null
-  tools: Record<string, number> | null
 }
 
 // The main thread's requests this session.
@@ -47,8 +44,10 @@ export type Ledger = {
   breakTokens: number
 }
 
-// The latest cache break: a warm cache the prefix lost.
-export type Break = { at: number; tokens: number; causes: string[] }
+// The latest cache break: a warm cache the prefix lost. `read` and `written`
+// are the request's own usage, `prompt` the previous request's; `changes`
+// is what the request shows changed since the previous one, empty when none.
+export type Break = { at: number; read: number; prompt: number; written: number; changes: string[] }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -64,7 +63,7 @@ declare module 'claude-code' {
       ttl: DetectedTtl | null
       ledger: Ledger
       lastRequest: LastRequest | null
-      lastBreak: Break | null
+      cacheBreak: Break | null
       lastPrint: Fingerprint | null
     }
   }

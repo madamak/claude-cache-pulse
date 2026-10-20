@@ -305,7 +305,7 @@ export const register: Register = (on, options) => {
     await update($, warm, () => null)
     if (e.usage) {
       const usage = e.usage
-      const turn: LastTurn = { endedAt: now, durationMs: e.durationMs, hitRate: hitRate(usage) }
+      const turn: LastTurn = { hitRate: hitRate(usage) }
       await update($, lastTurn, () => turn)
       await update($, cacheAnchor, () => now)
       // The reply's row lands in the transcript as the turn ends: read it
@@ -394,7 +394,7 @@ export const register: Register = (on, options) => {
     const compactCount = await read($, compactions)
     const warmed = await read($, warm)
     const stake = (await read($, lastRequest))?.stake ?? null
-    const totals = ledgerLine(await read($, ledger), compactCount)
+    const totals = ledgerLine(await read($, ledger), compactCount, last?.hitRate ?? null)
     const broke = await read($, lastBreak)
     const prompts = await $.session.turns()
     const usage = await $.session.usage()
@@ -485,12 +485,6 @@ export const register: Register = (on, options) => {
 
     const detail = [
       totals ? <Text dimColor>{totals}</Text> : null,
-      last ? (
-        <Text dimColor>
-          Last turn {fmtDur(last.durationMs)}
-          {last.hitRate !== null ? ` · ${Math.round(last.hitRate * 100)}% cache hit` : ''}
-        </Text>
-      ) : null,
       warmed ? (
         <Text dimColor>
           Warmed {fmtDur(now - warmed.at)} ago

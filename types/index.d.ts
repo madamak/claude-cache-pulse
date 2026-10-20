@@ -1,8 +1,5 @@
-export type LastTurn = {
-  endedAt: number
-  durationMs: number
-  hitRate: number | null
-}
+// The main thread's latest turn: the share of its input read from cache.
+export type LastTurn = { hitRate: number | null }
 
 export type Warm = {
   at: number

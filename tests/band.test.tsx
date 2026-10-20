@@ -59,8 +59,11 @@ test('a request that reads well short of the previous prompt lost the cache', as
   l = tally(l, use(100_000, 2_000), null)
   l = tally(l, use(0, 102_000), 'expired')
   l = tally(l, use(12_000, 90_000), 'break')
-  expect(ledgerLine(l, 1)).toBe('Session 28% from cache · 1 cold start (102k rewritten) · 1 cache break (90k) · 1 compaction')
-  expect(ledgerLine(EMPTY_LEDGER, 0)).toBeNull()
+  expect(ledgerLine(l, 1, 0.99)).toBe(
+    'Cache hit: last turn 99% · session avg 28% · 1 cold start (102k rewritten) · 1 cache break (90k) · 1 compaction',
+  )
+  expect(ledgerLine(l, 0, null)).toBe('Cache hit: session avg 28% · 1 cold start (102k rewritten) · 1 cache break (90k)')
+  expect(ledgerLine(EMPTY_LEDGER, 0, null)).toBeNull()
 })
 
 test('the footer gets a cache label on every surface that draws it', async ($, on) => {
@@ -488,7 +491,7 @@ test('an MCP server connecting mid-session is not named as the cause', async ($,
   await ui.unmount()
 })
 
-test('the last turn shows its duration and cache hit, and no model', async ($, on) => {
+test('the last turn shows its cache hit, and no model', async ($, on) => {
   mock.clock(on, { now: 10 * HOUR })
   on('session.usage', () => ({ value: { startedAt: 9 * HOUR, context: { window: 200_000 }, rateLimits: [] } }))
   on('session.turns', () => ({ value: 2 }))
@@ -508,7 +511,7 @@ test('the last turn shows its duration and cache hit, and no model', async ($, o
   })
 
   const ui = await $.ui.mount({ plugin: 'cache-pulse', surface: 'desktop', component: 'AbovePrompt', props: BAND_PROPS })
-  expect(await ui.find({ type: 'Text', text: 'Last turn 2m · 99% cache hit' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Cache hit: last turn 99%' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /opus/ })).toBeUndefined()
   await ui.unmount()
 })

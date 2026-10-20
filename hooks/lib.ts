@@ -296,11 +296,17 @@ function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? '' : 's'}`
 }
 
-// `Session 96% from cache · 1 cold start (180k rewritten) · 1 cache break (175k)`
-export function ledgerLine(l: Ledger, compactions: number): string | null {
-  if (l.requests === 0) return null
+// `Cache hit: last turn 99% · session avg 96% · 1 cold start (180k rewritten)`
+// The last turn's cache hit beside the session's average, weighted by tokens,
+// so the one reads against the other.
+export function ledgerLine(l: Ledger, compactions: number, lastHit: number | null): string | null {
   const total = l.read + l.written + l.uncached
-  const parts = [`Session ${total > 0 ? Math.round((l.read / total) * 100) : 0}% from cache`]
+  const hits = [
+    lastHit !== null ? `last turn ${Math.round(lastHit * 100)}%` : null,
+    l.requests > 0 ? `session avg ${total > 0 ? Math.round((l.read / total) * 100) : 0}%` : null,
+  ].filter(x => x !== null)
+  if (hits.length === 0) return null
+  const parts = [`Cache hit: ${hits.join(' · ')}`]
   if (l.coldStarts > 0) parts.push(`${plural(l.coldStarts, 'cold start')} (${fmtTokens(l.coldTokens)} rewritten)`)
   if (l.breaks > 0) parts.push(`${plural(l.breaks, 'cache break')} (${fmtTokens(l.breakTokens)})`)
   if (compactions > 0) parts.push(plural(compactions, 'compaction'))

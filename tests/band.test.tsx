@@ -1,7 +1,11 @@
+import type { ModelForkResult, On, SessionUsage } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 
 import {
   cacheState,
+  cacheTone,
+  coldLine,
   coldRatio,
   breakText,
   EMPTY_LEDGER,
@@ -11,12 +15,15 @@ import {
   lastAssistantAt,
   lastWriteTtl,
   ledgerLine,
+  levelTone,
+  metaLine,
   missCause,
   PING,
   requestChanges,
   tally,
   transcriptPath,
   ttlMs,
+  warmedLine,
 } from '../hooks/lib'
 
 const HOUR = 60 * 60_000
@@ -28,6 +35,15 @@ test('cache countdown runs from the last turn to the TTL', async () => {
   expect(cacheState(0, false, HOUR + 1, HOUR).kind).toBe('cold')
   expect(ttlMs('5m')).toBe(5 * 60_000)
   expect(ttlMs(undefined)).toBe(HOUR)
+})
+
+test('a reading earns a color only when it needs attention', async () => {
+  expect(cacheTone(cacheState(0, false, 10 * 60_000, HOUR), HOUR)).toBe('ok')
+  expect(cacheTone(cacheState(0, false, 56 * 60_000, HOUR), HOUR)).toBe('warn')
+  expect(cacheTone(cacheState(0, false, HOUR + 1, HOUR), HOUR)).toBe('bad')
+  expect(cacheTone(cacheState(0, true, 0, HOUR), HOUR)).toBe('live')
+  expect(cacheTone(cacheState(null, false, 0, HOUR), HOUR)).toBe('neutral')
+  expect([69, 70, 89, 90].map(levelTone)).toEqual(['neutral', 'warn', 'warn', 'bad'])
 })
 
 test('durations and token counts format', async () => {
@@ -45,6 +61,58 @@ test('durations and token counts format', async () => {
   expect(coldRatio(HOUR, 'claude-opus-5')).toBe(20)
   expect(coldRatio(HOUR, '')).toBe(20)
 })
+
+test('the band\'s own lines read as the README shows them', async () => {
+  expect(coldLine(182_400, HOUR, 'claude-sonnet-5-5')).toBe(
+    'next prompt rewrites 182k tokens: ≈20× the API cost of a warm prompt',
+  )
+  // 12.5× rounds down: the band never overstates the ratio.
+  expect(coldLine(90_000, 5 * 60_000, '')).toBe('next prompt rewrites 90k tokens: ≈12× the API cost of a warm prompt')
+  const w = { at: 0, hitRate: 0.981, count: 1, isAuto: true }
+  expect(warmedLine(w, 2 * 60_000, 3)).toBe('Warmed 2m ago · 98% hit · auto 1/3')
+  expect(warmedLine({ ...w, hitRate: null }, 2 * 60_000, null)).toBe('Warmed 2m ago')
+  expect(metaLine(3.4, 12, 2 * HOUR)).toBe('$3.40 · 12 prompts · 2h')
+  expect(metaLine(null, 1, 30_000)).toBe('1 prompt · 30s')
+})
+
+// Beneath the plugin, what the band reads of the engine: the session's
+// usage and prompt count, and an AbovePrompt of its own that draws nothing.
+function engineBand(on: On, turns: number, usage: Partial<SessionUsage> = {}): void {
+  on('session.usage', () => ({
+    value: { startedAt: 9 * HOUR, context: { window: 200_000 }, rateLimits: [], ...usage },
+  }))
+  on('session.turns', () => ({ value: turns }))
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Box } = $.ui.resolve(e)
+
+    return <Box />
+  })
+}
+
+// A ping that read the whole 90k context from cache.
+const FORK_OK: { value: ModelForkResult } = {
+  value: {
+    isAnswered: true,
+    text: 'ok',
+    usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 0 },
+  },
+}
+
+// A terminal session resumed `seconds` after its last reply, with no
+// transcript to read: the tick runs, as it does once a session starts.
+// Called after the test's own hooks, since the first call on `$` loads them.
+async function resumeInTerminal($: Engine, on: On, seconds: number): Promise<void> {
+  mock.env(on, { HOME: '/h' })
+  on('session.cwd', () => ({ value: '/x' }))
+  on('session.id', () => ({ value: 'id' }))
+  on('process.run', () => ({
+    value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('session.start', () => ({ cwd: '/x' }))
+  on('classic.SessionStart', () => ({}))
+  await $.session.start({ cwd: '/x', surface: 'terminal', isInteractive: true })
+  await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: seconds })
+}
 
 const use = (read: number, written: number, input = 10, output = 500) => ({
   input_tokens: input,
@@ -122,22 +190,13 @@ test('a break states what was measured, and no cause it cannot see', async () =>
 
 test('the band leaves out the weekly limit and shows the 5h one only when high', async ($, on) => {
   mock.clock(on, { now: 10 * HOUR })
-  on('session.usage', () => ({
-    value: {
-      startedAt: 9 * HOUR,
-      context: { window: 200_000, tokens: 84_000, percent: 42 },
-      rateLimits: [
-        { kind: 'five_hour', percentUsed: 23, resetsAt: new Date(12 * HOUR).toISOString() },
-        { kind: 'seven_day', percentUsed: 81 },
-      ],
-      cost: { usd: 3.4 },
-    },
-  }))
-  on('session.turns', () => ({ value: 3 }))
-  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
-    const { Box } = $.ui.resolve(e)
-
-    return <Box />
+  engineBand(on, 3, {
+    context: { window: 200_000, tokens: 84_000, percent: 42 },
+    rateLimits: [
+      { kind: 'five_hour', percentUsed: 23, resetsAt: new Date(12 * HOUR).toISOString() },
+      { kind: 'seven_day', percentUsed: 81 },
+    ],
+    cost: { usd: 3.4 },
   })
 
   for (const surface of ['terminal', 'desktop'] as const) {
@@ -153,18 +212,8 @@ test('the band leaves out the weekly limit and shows the 5h one only when high',
 
 test('a 5h limit at 70% or more joins the band', async ($, on) => {
   mock.clock(on, { now: 10 * HOUR })
-  on('session.usage', () => ({
-    value: {
-      startedAt: 9 * HOUR,
-      context: { window: 200_000 },
-      rateLimits: [{ kind: 'five_hour', percentUsed: 76, resetsAt: new Date(12 * HOUR).toISOString() }],
-    },
-  }))
-  on('session.turns', () => ({ value: 3 }))
-  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
-    const { Box } = $.ui.resolve(e)
-
-    return <Box />
+  engineBand(on, 3, {
+    rateLimits: [{ kind: 'five_hour', percentUsed: 76, resetsAt: new Date(12 * HOUR).toISOString() }],
   })
 
   const term = await $.ui.mount({ plugin: 'cache-pulse', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
@@ -197,13 +246,7 @@ test('a warm cache lost to a model switch is flagged and counted', async ($, on)
 
     return { value: undefined }
   })
-  on('session.usage', () => ({ value: { startedAt: 9 * HOUR, context: { window: 200_000 }, rateLimits: [] } }))
-  on('session.turns', () => ({ value: 2 }))
-  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
-    const { Box } = $.ui.resolve(e)
-
-    return <Box />
-  })
+  engineBand(on, 2)
   let next = step('claude-opus-5-5', use(0, 100_000))
   on('turn.step', async function* (_$, e) {
     return { ...next, turnId: e.turnId, index: e.index }
@@ -228,13 +271,7 @@ test('a warm cache lost to a model switch is flagged and counted', async ($, on)
 
 test('a cold cache says what the next prompt rewrites, and the request counts as a cold start', async ($, on) => {
   const clock = mock.clock(on, { now: 10 * HOUR })
-  on('session.usage', () => ({ value: { startedAt: 9 * HOUR, context: { window: 200_000 }, rateLimits: [] } }))
-  on('session.turns', () => ({ value: 2 }))
-  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
-    const { Box } = $.ui.resolve(e)
-
-    return <Box />
-  })
+  engineBand(on, 2)
   on('classic.SessionStart', () => ({}))
   on('turn.step', async function* () {
     return step('claude-opus-5-5', use(0, 92_000))
@@ -271,28 +308,9 @@ test('Keep warm forks the session and restarts the countdown', async ($, on) => 
   on('model.fork', () => {
     forks += 1
 
-    return {
-      value: {
-        isAnswered: true,
-        text: 'ok',
-        usage: {
-          input_tokens: 10,
-          output_tokens: 2,
-          cache_read_input_tokens: 90_000,
-          cache_creation_input_tokens: 0,
-        },
-      },
-    }
+    return FORK_OK
   })
-  on('session.usage', () => ({
-    value: { startedAt: 9 * HOUR, context: { window: 200_000 }, rateLimits: [] },
-  }))
-  on('session.turns', () => ({ value: 1 }))
-  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
-    const { Box } = $.ui.resolve(e)
-
-    return <Box />
-  })
+  engineBand(on, 1)
   on('classic.SessionStart', () => ({}))
   // A resumed session whose last reply was 50 minutes ago: 10 minutes left.
   await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: 50 * 60 })
@@ -316,35 +334,20 @@ test('Keep warm forks the session and restarts the countdown', async ($, on) => 
 
 test('auto mode warms before expiry, then stops at the cap and notifies', { options: { keepWarm: 'auto', keepWarmMax: 2 } }, async ($, on) => {
   const clock = mock.clock(on, { now: 10 * HOUR })
-  mock.env(on, { HOME: '/h' })
   let forks = 0
   const notes: string[] = []
   on('model.fork', () => {
     forks += 1
 
-    return {
-      value: {
-        isAnswered: true,
-        text: 'ok',
-        usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 0 },
-      },
-    }
+    return FORK_OK
   })
   on('ui.notify', (_$, e) => {
     notes.push(e.text)
 
     return { value: { isSent: true, channel: 'terminal_bell' as const } }
   })
-  on('session.cwd', () => ({ value: '/x' }))
-  on('session.id', () => ({ value: 'id' }))
-  on('process.run', () => ({
-    value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
-  }))
-  on('session.start', () => ({ cwd: '/x' }))
-  on('classic.SessionStart', () => ({}))
-
-  await $.session.start({ cwd: '/x', surface: 'terminal', isInteractive: true })
-  await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: 50 * 60 })
+  // Resumed 50 minutes after the last reply: 10 minutes left.
+  await resumeInTerminal($, on, 50 * 60)
 
   await clock.advance(6 * 60_000) // 4m left: first auto-warm
   expect(forks).toBe(1)
@@ -378,16 +381,8 @@ test('the TTL comes from the newest cache write the API reported', async () => {
 
 test('the band marks an assumed TTL and follows the engine on a model switch', async ($, on) => {
   mock.clock(on, { now: 10 * HOUR })
-  on('session.usage', () => ({
-    value: { startedAt: 9 * HOUR, context: { window: 200_000 }, rateLimits: [] },
-  }))
-  on('session.turns', () => ({ value: 1 }))
+  engineBand(on, 1)
   on('classic.PreModelSwitch', () => ({}))
-  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
-    const { Box } = $.ui.resolve(e)
-
-    return <Box />
-  })
 
   const before = await $.ui.mount({
     plugin: 'cache-pulse',
@@ -428,23 +423,9 @@ test('the band says it is warming while the fork runs', async ($, on) => {
   on('model.fork', async () => {
     await held
 
-    return {
-      value: {
-        isAnswered: true,
-        text: 'ok',
-        usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 0 },
-      },
-    }
+    return FORK_OK
   })
-  on('session.usage', () => ({
-    value: { startedAt: 9 * HOUR, context: { window: 200_000 }, rateLimits: [] },
-  }))
-  on('session.turns', () => ({ value: 1 }))
-  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
-    const { Box } = $.ui.resolve(e)
-
-    return <Box />
-  })
+  engineBand(on, 1)
   on('classic.SessionStart', () => ({}))
   await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: 50 * 60 })
 
@@ -468,13 +449,7 @@ test('an MCP server connecting mid-session is not named as the cause', async ($,
   ]
   on('tool.list', () => ({ value: tools }))
   on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are Claude Code.', scope: 'shared' as const }] }))
-  on('session.usage', () => ({ value: { startedAt: 9 * HOUR, context: { window: 200_000 }, rateLimits: [] } }))
-  on('session.turns', () => ({ value: 2 }))
-  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
-    const { Box } = $.ui.resolve(e)
-
-    return <Box />
-  })
+  engineBand(on, 2)
   let next = step('claude-opus-5-5', use(0, 100_000))
   on('turn.step', async function* (_$, e) {
     return { ...next, turnId: e.turnId, index: e.index }
@@ -499,13 +474,7 @@ test('an MCP server connecting mid-session is not named as the cause', async ($,
 
 test('the last turn shows its cache hit, and no model', async ($, on) => {
   mock.clock(on, { now: 10 * HOUR })
-  on('session.usage', () => ({ value: { startedAt: 9 * HOUR, context: { window: 200_000 }, rateLimits: [] } }))
-  on('session.turns', () => ({ value: 2 }))
-  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
-    const { Box } = $.ui.resolve(e)
-
-    return <Box />
-  })
+  engineBand(on, 2)
   on('turn.complete', (_$, e) => ({ text: e.answer }))
   await $.turn.complete({
     turnId: 't',
@@ -522,9 +491,32 @@ test('the last turn shows its cache hit, and no model', async ($, on) => {
   await ui.unmount()
 })
 
+test('a /clear starts the conversation over and keeps the TTL', async ($, on) => {
+  mock.clock(on, { now: 10 * HOUR })
+  engineBand(on, 2)
+  on('turn.complete', (_$, e) => ({ text: e.answer }))
+  on('classic.PreModelSwitch', () => ({}))
+  on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
+  await $.turn.complete({
+    turnId: 't',
+    reason: 'answer',
+    answer: 'done',
+    durationMs: 1_000,
+    isAborted: false,
+    usage: { ...use(99_000, 1_000, 0), model: 'claude-opus-5-5' },
+  })
+  await $.classic.PreModelSwitch({ cache_ttl: '5m' } as never)
+  await $.session.end({ reason: 'clear', sessionId: 'id' } as never)
+
+  const ui = await $.ui.mount({ plugin: 'cache-pulse', surface: 'desktop', component: 'AbovePrompt', props: BAND_PROPS })
+  expect(await ui.find({ type: 'Text', text: 'waiting for a turn' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Cache hit/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: '/ 5m' })).toBeDefined()
+  await ui.unmount()
+})
+
 test('a failed auto-warm is tried once, and the expiry warning still comes', { options: { keepWarm: 'auto', keepWarmMax: 3 } }, async ($, on) => {
   const clock = mock.clock(on, { now: 10 * HOUR })
-  mock.env(on, { HOME: '/h' })
   let forks = 0
   const toasts: string[] = []
   const notes: string[] = []
@@ -551,16 +543,8 @@ test('a failed auto-warm is tried once, and the expiry warning still comes', { o
 
     return { value: { isSent: true, channel: 'terminal_bell' as const } }
   })
-  on('session.cwd', () => ({ value: '/x' }))
-  on('session.id', () => ({ value: 'id' }))
-  on('process.run', () => ({
-    value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
-  }))
-  on('session.start', () => ({ cwd: '/x' }))
-  on('classic.SessionStart', () => ({}))
-
-  await $.session.start({ cwd: '/x', surface: 'terminal', isInteractive: true })
-  await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: 50 * 60 })
+  // Resumed 50 minutes after the last reply: 10 minutes left.
+  await resumeInTerminal($, on, 50 * 60)
 
   await clock.advance(6 * 60_000) // 4m left: the auto-warm fails
   await clock.advance(2 * 60_000) // eight more ticks
@@ -579,21 +563,9 @@ test('a turn you start while the ping runs still counts, and the ping\'s own doe
   on('model.fork', async () => {
     await held
 
-    return {
-      value: {
-        isAnswered: true,
-        text: 'ok',
-        usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 0 },
-      },
-    }
+    return FORK_OK
   })
-  on('session.usage', () => ({ value: { startedAt: 9 * HOUR, context: { window: 200_000 }, rateLimits: [] } }))
-  on('session.turns', () => ({ value: 1 }))
-  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
-    const { Box } = $.ui.resolve(e)
-
-    return <Box />
-  })
+  engineBand(on, 1)
   on('classic.SessionStart', () => ({}))
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.step', async function* (_$, e) {
@@ -619,13 +591,7 @@ test('a turn you start while the ping runs still counts, and the ping\'s own doe
 
 test('the cold ratio follows the model of the last request', async ($, on) => {
   mock.clock(on, { now: 10 * HOUR })
-  on('session.usage', () => ({ value: { startedAt: 9 * HOUR, context: { window: 200_000 }, rateLimits: [] } }))
-  on('session.turns', () => ({ value: 2 }))
-  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
-    const { Box } = $.ui.resolve(e)
-
-    return <Box />
-  })
+  engineBand(on, 2)
   on('classic.SessionStart', () => ({}))
   await $.classic.SessionStart({
     source: 'resume',

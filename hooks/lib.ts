@@ -1,6 +1,6 @@
-import type { ModelUsage } from 'claude-code'
+import type { ModelUsage, ThemeKey } from 'claude-code'
 
-import type { Break, Fingerprint, LastRequest, Ledger, MissCause } from '../types'
+import type { Break, Fingerprint, LastRequest, Ledger, MissCause, Warm } from '../types'
 
 export type CacheState =
   | { kind: 'none' }
@@ -17,28 +17,41 @@ export function ttlMs(ttl: unknown): number {
   return ttl === '5m' ? 5 * 60_000 : 60 * 60_000
 }
 
+// What the module reads of a transcript row.
+type Row = {
+  type?: string
+  isSidechain?: boolean
+  timestamp?: string
+  message?: { usage?: { cache_creation?: Record<string, number> } }
+}
+
+// The main thread's assistant rows in a transcript's tail, newest first.
+// `needle` skips the parse of a line that cannot be one of interest.
+function* mainAssistantRows(jsonl: string, needle: string): Generator<Row> {
+  const lines = jsonl.split('\n')
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i]
+    if (!line || !line.includes(needle)) continue
+    let row: Row
+    try {
+      row = JSON.parse(line) as Row
+    } catch {
+      // The tail's first line is usually cut mid-row.
+      continue
+    }
+    if (row.type === 'assistant' && !row.isSidechain) yield row
+  }
+}
+
 // The TTL the newest cache write used, from the API's own usage on the main
 // thread's assistant rows: `cache_creation.ephemeral_1h_input_tokens` or
 // `ephemeral_5m_input_tokens`. A row that only read the cache says nothing,
 // so the scan goes back to the newest row that wrote.
 export function lastWriteTtl(jsonl: string): TtlName | null {
-  const lines = jsonl.split('\n')
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const line = lines[i]
-    if (!line || !line.includes('"cache_creation"')) continue
-    try {
-      const row = JSON.parse(line) as {
-        type?: string
-        isSidechain?: boolean
-        message?: { usage?: { cache_creation?: Record<string, number> } }
-      }
-      if (row.type !== 'assistant' || row.isSidechain) continue
-      const written = row.message?.usage?.cache_creation
-      if ((written?.ephemeral_1h_input_tokens ?? 0) > 0) return '1h'
-      if ((written?.ephemeral_5m_input_tokens ?? 0) > 0) return '5m'
-    } catch {
-      // The tail's first line is usually cut mid-row.
-    }
+  for (const row of mainAssistantRows(jsonl, '"cache_creation"')) {
+    const written = row.message?.usage?.cache_creation
+    if ((written?.ephemeral_1h_input_tokens ?? 0) > 0) return '1h'
+    if ((written?.ephemeral_5m_input_tokens ?? 0) > 0) return '5m'
   }
 
   return null
@@ -94,17 +107,16 @@ export function footerLabel(s: CacheState): string {
   }
 }
 
-export function hitRate(u: ModelUsage): number | null {
-  const total = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
-
-  return total > 0 ? u.cache_read_input_tokens / total : null
+// The tokens a request was answered over, cached or not.
+export function promptTokens(u: ModelUsage): number {
+  return u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
 }
 
-export function levelColor(percent: number): string {
-  if (percent >= 90) return 'error'
-  if (percent >= 70) return 'warning'
+// The share of a request's prompt read from cache.
+export function hitRate(u: ModelUsage): number | null {
+  const total = promptTokens(u)
 
-  return 'success'
+  return total > 0 ? u.cache_read_input_tokens / total : null
 }
 
 export function limitLabel(kind: string): string {
@@ -118,29 +130,42 @@ export function shortModel(model: string): string {
   return model.replace(/^claude-/, '').replace(/-\d{8}$/, '')
 }
 
+// What a reading says, decided once and drawn two ways: a theme color in
+// the terminal, a fixed hex in the Svg meters.
+export type Tone = 'ok' | 'warn' | 'bad' | 'live' | 'neutral'
+
+export function cacheTone(s: CacheState, ttl: number): Tone {
+  if (s.kind === 'live') return 'live'
+  if (s.kind === 'hot') return s.remainingMs <= warnMs(ttl) ? 'warn' : 'ok'
+  if (s.kind === 'cold') return 'bad'
+
+  return 'neutral'
+}
+
+// Only a high reading earns a color.
+export function levelTone(percent: number): Tone {
+  if (percent >= 90) return 'bad'
+  if (percent >= 70) return 'warn'
+
+  return 'neutral'
+}
+
+export const THEME: Record<Tone, ThemeKey> = {
+  ok: 'success',
+  warn: 'warning',
+  bad: 'error',
+  live: 'suggestion',
+  neutral: 'inactive',
+}
+
 // Inline SVG meters for surfaces that draw Svg (desktop, vscode, mobile).
 // Drawn as images, so the colors are fixed hex that read on light and dark.
-export const HEX = {
+export const HEX: Record<Tone, string> = {
   ok: '#3fb950',
   warn: '#d29922',
   bad: '#f85149',
   live: '#58a6ff',
   neutral: '#8b949e',
-}
-
-export function levelHex(percent: number): string {
-  if (percent >= 90) return HEX.bad
-  if (percent >= 70) return HEX.warn
-
-  return HEX.neutral
-}
-
-export function cacheHex(s: CacheState, ttl: number): string {
-  if (s.kind === 'live') return HEX.live
-  if (s.kind === 'hot') return s.remainingMs <= warnMs(ttl) ? HEX.warn : HEX.ok
-  if (s.kind === 'cold') return HEX.bad
-
-  return HEX.neutral
 }
 
 // What is left of the cache's life, 0 to 1: full while a turn runs.
@@ -184,7 +209,7 @@ export function cacheTitle(s: CacheState): string {
   return 'Cache'
 }
 
-export function cacheDetail(s: CacheState, ttl: number): string {
+export function cacheDetail(s: CacheState): string {
   if (s.kind === 'live') return 'turn running'
   if (s.kind === 'hot') return `${fmtDur(s.remainingMs)} left`
   if (s.kind === 'cold') return `idle ${fmtDur(s.idleMs)}`
@@ -199,19 +224,9 @@ export function transcriptPath(configDir: string, cwd: string, sessionId: string
 
 // The time of the main thread's last assistant row in a transcript's tail.
 export function lastAssistantAt(jsonl: string): number | null {
-  const lines = jsonl.split('\n')
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const line = lines[i]
-    if (!line || !line.includes('"assistant"')) continue
-    try {
-      const row = JSON.parse(line) as { type?: string; isSidechain?: boolean; timestamp?: string }
-      if (row.type === 'assistant' && !row.isSidechain && row.timestamp) {
-        const at = Date.parse(row.timestamp)
-        if (!Number.isNaN(at)) return at
-      }
-    } catch {
-      // The tail's first line is usually cut mid-row.
-    }
+  for (const row of mainAssistantRows(jsonl, '"assistant"')) {
+    const at = row.timestamp ? Date.parse(row.timestamp) : Number.NaN
+    if (!Number.isNaN(at)) return at
   }
 
   return null
@@ -242,11 +257,6 @@ export function readRate(model: string): number {
 // never in money.
 export function coldRatio(ttl: number, model: string): number {
   return (ttl <= 5 * 60_000 ? 1.25 : 2) / readRate(model)
-}
-
-// The tokens a request was answered over, cached or not.
-export function promptTokens(u: ModelUsage): number {
-  return u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
 }
 
 // Whether a request lost the cache. Claude Code puts its cache breakpoint at
@@ -305,6 +315,26 @@ export function tally(l: Ledger, u: ModelUsage, cause: MissCause | null): Ledger
     breaks: l.breaks + (cause === 'break' ? 1 : 0),
     breakTokens: l.breakTokens + (cause === 'break' ? rewritten : 0),
   }
+}
+
+// `next prompt rewrites 182k tokens: ≈20× the API cost of a warm prompt`
+export function coldLine(stake: number, ttl: number, model: string): string {
+  return `next prompt rewrites ${fmtTokens(stake)} tokens: ≈${Math.floor(coldRatio(ttl, model))}× the API cost of a warm prompt`
+}
+
+// `Warmed 2m ago · 98% hit · auto 1/3`: the cap only in auto mode.
+export function warmedLine(w: Warm, now: number, autoMax: number | null): string {
+  const hit = w.hitRate !== null ? ` · ${Math.round(w.hitRate * 100)}% hit` : ''
+  const auto = autoMax !== null ? ` · auto ${w.count}/${autoMax}` : ''
+
+  return `Warmed ${fmtDur(now - w.at)} ago${hit}${auto}`
+}
+
+// `$3.40 · 12 prompts · 2h`: the cost only where the engine reports one.
+export function metaLine(usd: number | null, prompts: number, ageMs: number): string {
+  return [usd !== null ? `$${usd.toFixed(2)}` : null, plural(prompts, 'prompt'), fmtDur(ageMs)]
+    .filter(x => x !== null)
+    .join(' · ')
 }
 
 function plural(n: number, word: string): string {

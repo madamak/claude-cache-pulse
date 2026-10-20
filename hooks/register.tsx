@@ -1,18 +1,17 @@
 import { atom, read, update } from 'claude-code'
-import type { Elements, EngineInterface, Register } from 'claude-code'
+import type { Elements, EngineInterface, ModelUsage, Register } from 'claude-code'
 
-import type { ModelUsage } from 'claude-code'
-import type { Break, DetectedTtl, Fingerprint, LastTurn, Warm } from '../types'
-import type { CacheState, TtlName } from './lib'
+import type { Break, Fingerprint } from '../types'
+import type { TtlName } from './lib'
 import {
   blocks,
   breakText,
   cacheDetail,
   cacheFraction,
-  cacheHex,
   cacheState,
+  cacheTone,
   cacheTitle,
-  coldRatio,
+  coldLine,
   EMPTY_LEDGER,
   fmtDur,
   fmtTokens,
@@ -23,34 +22,41 @@ import {
   lastAssistantAt,
   lastWriteTtl,
   ledgerLine,
-  levelColor,
-  levelHex,
+  levelTone,
   limitLabel,
   meterSvg,
+  metaLine,
   missCause,
   PING,
   promptTokens,
   requestChanges,
   ringSvg,
   tally,
+  THEME,
   transcriptPath,
   ttlMs,
+  warmedLine,
   warnMs,
 } from './lib'
 
-const lastTurn = atom({ plugin: 'cache-pulse', key: 'lastTurn' } as const, null)
+// The conversation's cache and its history: a /clear starts them over
+// (session.end).
 const cacheAnchor = atom({ plugin: 'cache-pulse', key: 'cacheAnchor' } as const, null)
-const isWorking = atom({ plugin: 'cache-pulse', key: 'isWorking' } as const, false)
+const lastTurn = atom({ plugin: 'cache-pulse', key: 'lastTurn' } as const, null)
 const compactions = atom({ plugin: 'cache-pulse', key: 'compactions' } as const, 0)
-const tick = atom({ plugin: 'cache-pulse', key: 'tick' } as const, 0)
-const toasted = atom({ plugin: 'cache-pulse', key: 'toasted' } as const, [])
 const warm = atom({ plugin: 'cache-pulse', key: 'warm' } as const, null)
-const warming = atom({ plugin: 'cache-pulse', key: 'warming' } as const, false)
-const detectedTtl = atom({ plugin: 'cache-pulse', key: 'ttl' } as const, null)
 const ledger = atom({ plugin: 'cache-pulse', key: 'ledger' } as const, EMPTY_LEDGER)
 const lastRequest = atom({ plugin: 'cache-pulse', key: 'lastRequest' } as const, null)
 const lastBreak = atom({ plugin: 'cache-pulse', key: 'cacheBreak' } as const, null)
 const lastPrint = atom({ plugin: 'cache-pulse', key: 'lastPrint' } as const, null)
+
+// Kept across a /clear: the TTL is the account's, and the rest only
+// describes the moment (a turn or a ping running, the tick, toasts shown).
+const detectedTtl = atom({ plugin: 'cache-pulse', key: 'ttl' } as const, null)
+const isWorking = atom({ plugin: 'cache-pulse', key: 'isWorking' } as const, false)
+const warming = atom({ plugin: 'cache-pulse', key: 'warming' } as const, false)
+const tick = atom({ plugin: 'cache-pulse', key: 'tick' } as const, 0)
+const toasted = atom({ plugin: 'cache-pulse', key: 'toasted' } as const, [])
 
 const TICK_MS = 15_000
 const LIMIT_THRESHOLDS = [80, 95]
@@ -58,16 +64,14 @@ const LIMIT_THRESHOLDS = [80, 95]
 // True while a keep-warm fork runs. The fork is one completion, but should it
 // raise turn events of its own, they are not taken for yours: while it runs,
 // a turn counts only once its start shows it is not the ping.
+// The `warming` atom says the same to the band; this flag is the lock, read
+// and set with no await between, so two presses cannot both send a fork.
 let isWarming = false
 const yourTurns = new Set<string>()
 
 function isPingEvent(turnId: string): boolean {
   return isWarming && !yourTurns.has(turnId)
 }
-
-// The countdown an auto-warm was last tried for: one try each, so a fork that
-// fails is not sent again every tick and the expiry warning still comes.
-let autoTriedFor: number | null = null
 
 // Workaround: the engine hands a mod neither a cache timestamp nor the TTL
 // split of a cache write, but the session transcript stores the API's raw
@@ -98,8 +102,7 @@ async function seedAnchor($: EngineInterface, tail: string | null): Promise<void
 async function detectTtl($: EngineInterface, tail: string | null): Promise<void> {
   const value = tail === null ? null : lastWriteTtl(tail)
   if (value === null) return
-  const found: DetectedTtl = { value, source: 'api' }
-  await update($, detectedTtl, () => found)
+  await update($, detectedTtl, () => ({ value, source: 'api' }))
 }
 
 // The TTL in force: the pinned one, else the detected one, else 1h assumed.
@@ -112,24 +115,14 @@ async function ttlOf(
   return { ms: ttlMs(pinned ?? found?.value ?? '1h'), isKnown: pinned !== null || found !== null }
 }
 
-function cacheTheme(s: CacheState, ttl: number): string {
-  if (s.kind === 'live') return 'suggestion'
-  if (s.kind === 'hot') return s.remainingMs <= warnMs(ttl) ? 'warning' : 'success'
-  if (s.kind === 'cold') return 'error'
-
-  return 'inactive'
-}
-
-// Only a high reading earns a color; the rest stays in the text color.
-function alertColor(percent: number): string | undefined {
-  return percent >= 70 ? levelColor(percent) : undefined
-}
-
-async function toastOnce($: EngineInterface, key: string, text: string): Promise<void> {
+// True when it toasted: the first time for this key.
+async function toastOnce($: EngineInterface, key: string, text: string): Promise<boolean> {
   const seen = await read($, toasted)
-  if (seen.includes(key)) return
-  await update($, toasted, list => [...(list ?? []).slice(-50), key])
+  if (seen.includes(key)) return false
+  await update($, toasted, list => [...list.slice(-50), key])
   $.ui.toast(text)
+
+  return true
 }
 
 // Through the person's own notification channel, the one Claude Code's own
@@ -144,7 +137,6 @@ async function notify($: EngineInterface, text: string): Promise<void> {
 // and what the request shows changed since the one before.
 async function recordRequest(
   $: EngineInterface,
-  model: string,
   usage: ModelUsage,
   isExpired: boolean,
   print: Fingerprint,
@@ -153,9 +145,9 @@ async function recordRequest(
   const before = await read($, lastPrint)
   const prev = await read($, lastRequest)
   const cause = missCause(prev, usage, isExpired)
-  await update($, ledger, l => tally(l ?? EMPTY_LEDGER, usage, cause))
+  await update($, ledger, l => tally(l, usage, cause))
   const prompt = promptTokens(usage)
-  await update($, lastRequest, () => ({ prompt, stake: prompt + usage.output_tokens, model }))
+  await update($, lastRequest, () => ({ prompt, stake: prompt + usage.output_tokens, model: print.model }))
   await update($, lastPrint, () => print)
   // Each request reads and so refreshes the cache.
   await update($, cacheAnchor, () => now)
@@ -197,7 +189,7 @@ async function warmCache($: EngineInterface, isAuto: boolean): Promise<boolean> 
     // A ping that read nothing paid the cold start itself: counted whole, so
     // the session average weighs the write the cold start names.
     if (usage.cache_read_input_tokens === 0) {
-      await update($, ledger, l => tally(l ?? EMPTY_LEDGER, usage, 'expired'))
+      await update($, ledger, l => tally(l, usage, 'expired'))
     }
     await update($, warm, w => ({
       at: now,
@@ -232,9 +224,12 @@ export const register: Register = (on, options) => {
     const tail = await transcriptTail($)
     await seedAnchor($, tail)
     await detectTtl($, tail)
+    // The countdown an auto-warm was last tried for: one try each, so a fork
+    // that fails is not sent again every tick and the expiry warning still comes.
+    let autoTriedFor: number | null = null
     $.clock.every(TICK_MS, () => {
       void (async () => {
-        await update($, tick, n => (n ?? 0) + 1)
+        await update($, tick, n => n + 1)
         const ttl = (await ttlOf($, pinned)).ms
         const anchor = await read($, cacheAnchor)
         const s = cacheState(anchor, await read($, isWorking), await $.clock.now(), ttl)
@@ -249,9 +244,7 @@ export const register: Register = (on, options) => {
         const auto =
           keepWarm !== 'auto' ? '' : warms < keepWarmMax ? ' Auto-warm failed.' : ` Auto-warm stopped after ${warms} in a row.`
         const text = `Prompt cache expires in ${fmtDur(s.remainingMs)}. Reply now to keep it warm.${auto}`
-        const seen = (await read($, toasted)).includes(`cache:${anchor}`)
-        await toastOnce($, `cache:${anchor}`, text)
-        if (!seen) await notify($, text)
+        if (await toastOnce($, `cache:${anchor}`, text)) await notify($, text)
       })()
     })
 
@@ -276,8 +269,7 @@ export const register: Register = (on, options) => {
 
   // The engine's own TTL, raised on a model switch.
   on('classic.PreModelSwitch', async ($, e, next) => {
-    const found: DetectedTtl = { value: e.cache_ttl, source: 'engine' }
-    await update($, detectedTtl, () => found)
+    await update($, detectedTtl, () => ({ value: e.cache_ttl, source: 'engine' }))
 
     return next(e)
   })
@@ -306,7 +298,7 @@ export const register: Register = (on, options) => {
       messages: e.messageCount,
     }
     const result = yield* next(e)
-    if (result.usage) await recordRequest($, e.model, result.usage, isExpired, print)
+    if (result.usage) await recordRequest($, result.usage, isExpired, print)
 
     return result
   })
@@ -321,8 +313,7 @@ export const register: Register = (on, options) => {
     await update($, warm, () => null)
     if (e.usage) {
       const usage = e.usage
-      const turn: LastTurn = { hitRate: hitRate(usage) }
-      await update($, lastTurn, () => turn)
+      await update($, lastTurn, () => ({ hitRate: hitRate(usage) }))
       await update($, cacheAnchor, () => now)
       // The reply's row lands in the transcript as the turn ends: read it
       // once it is written. A usage-overage switch to 5m shows up here.
@@ -339,7 +330,7 @@ export const register: Register = (on, options) => {
   on('session.compact', async ($, e, next) => {
     const result = await next(e)
     if (e.agentId === undefined && !('skip' in result)) {
-      await update($, compactions, n => (n ?? 0) + 1)
+      await update($, compactions, n => n + 1)
       // The summary is a new prefix: nothing of it is cached yet, and the
       // rewrite the next request does is expected.
       await update($, cacheAnchor, () => null)
@@ -351,14 +342,16 @@ export const register: Register = (on, options) => {
 
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') {
-      await update($, cacheAnchor, () => null)
-      await update($, lastTurn, () => null)
-      await update($, compactions, () => 0)
-      await update($, warm, () => null)
-      await update($, ledger, () => EMPTY_LEDGER)
-      await update($, lastRequest, () => null)
-      await update($, lastBreak, () => null)
-      await update($, lastPrint, () => null)
+      // Each atom of the first group above, named one by one: validate reads
+      // the keys a module writes off its source, and a loop hides them.
+      await update($, cacheAnchor, () => cacheAnchor.initial)
+      await update($, lastTurn, () => lastTurn.initial)
+      await update($, compactions, () => compactions.initial)
+      await update($, warm, () => warm.initial)
+      await update($, ledger, () => ledger.initial)
+      await update($, lastRequest, () => lastRequest.initial)
+      await update($, lastBreak, () => lastBreak.initial)
+      await update($, lastPrint, () => lastPrint.initial)
     }
 
     return next(e)
@@ -413,6 +406,7 @@ export const register: Register = (on, options) => {
     const stake = previous?.stake ?? null
     const totals = ledgerLine(await read($, ledger), compactCount, last?.hitRate ?? null)
     const broke = await read($, lastBreak)
+    const isWarmingNow = await read($, warming)
     const prompts = await $.session.turns()
     const usage = await $.session.usage()
 
@@ -424,38 +418,33 @@ export const register: Register = (on, options) => {
     const meter = (label: string, percent: number) =>
       Svg ? (
         <Svg
-          source={meterSvg(percent, levelHex(percent))}
+          source={meterSvg(percent, HEX[levelTone(percent)])}
           alt={`${label} ${percent}%`}
           width={44}
           height={5}
         />
       ) : (
-        <Text color={levelColor(percent)}>{blocks(percent)}</Text>
+        <Text color={THEME[levelTone(percent)]}>{blocks(percent)}</Text>
       )
 
-    const isWarmingNow = await read($, warming)
     const cacheLabel = isWarmingNow ? 'Cache warming' : cacheTitle(s)
-    const cacheText = isWarmingNow ? 'resending the last request' : cacheDetail(s, ttl)
+    const cacheText = isWarmingNow ? 'resending the last request' : cacheDetail(s)
+    // A warming fork draws as a live turn; a hot cache well before its
+    // warning keeps the label in the text color.
+    const tone = isWarmingNow ? 'live' : cacheTone(s, ttl)
     const cache = (
       <Box flexDirection="row" alignItems="center" columnGap={1}>
         {Svg ? (
           <Svg
-            source={ringSvg(isWarmingNow ? 1 : cacheFraction(s, ttl), isWarmingNow ? HEX.live : cacheHex(s, ttl))}
+            source={ringSvg(isWarmingNow ? 1 : cacheFraction(s, ttl), HEX[tone])}
             alt={`${cacheLabel}, ${cacheText}`}
             width={14}
             height={14}
           />
         ) : (
-          <Text color={isWarmingNow ? 'suggestion' : cacheTheme(s, ttl)}>
-            {isWarmingNow || s.kind === 'hot' || s.kind === 'live' ? '●' : '○'}
-          </Text>
+          <Text color={THEME[tone]}>{isWarmingNow || s.kind === 'hot' || s.kind === 'live' ? '●' : '○'}</Text>
         )}
-        <Text
-          bold
-          color={
-            isWarmingNow ? 'suggestion' : s.kind === 'hot' && s.remainingMs > warnMs(ttl) ? undefined : cacheTheme(s, ttl)
-          }
-        >
+        <Text bold color={tone === 'ok' ? undefined : THEME[tone]}>
           {cacheLabel}
         </Text>
         <Text>{cacheText}</Text>
@@ -465,9 +454,7 @@ export const register: Register = (on, options) => {
           {stake !== null && s.kind !== 'cold' ? ` · ${fmtTokens(stake)} tokens` : ''}
         </Text>
         {stake !== null && s.kind === 'cold' && !isWarmingNow ? (
-          <Text color="warning">
-            next prompt rewrites {fmtTokens(stake)} tokens: ≈{Math.floor(coldRatio(ttl, previous?.model ?? ''))}× the API cost of a warm prompt
-          </Text>
+          <Text color="warning">{coldLine(stake, ttl, previous?.model ?? '')}</Text>
         ) : null}
         {isWarmingNow ? (
           <Text dimColor>Warming…</Text>
@@ -485,30 +472,16 @@ export const register: Register = (on, options) => {
         <Box flexDirection="row" alignItems="center" columnGap={1}>
           <Text dimColor>{limitLabel(limit.kind)}</Text>
           {meter(limitLabel(limit.kind), limit.percentUsed)}
-          <Text color={alertColor(limit.percentUsed)}>{limit.percentUsed}%</Text>
+          <Text color={THEME[levelTone(limit.percentUsed)]}>{limit.percentUsed}%</Text>
           {limit.resetsAt ? (
             <Text dimColor>↺ {fmtDur(Date.parse(limit.resetsAt) - now)}</Text>
           ) : null}
         </Box>
       ))
 
-    const meta = [
-      usage.cost ? `$${usage.cost.usd.toFixed(2)}` : null,
-      `${prompts} prompt${prompts === 1 ? '' : 's'}`,
-      fmtDur(now - usage.startedAt),
-    ]
-      .filter(x => x !== null)
-      .join(' · ')
-
     const detail = [
       totals ? <Text dimColor>{totals}</Text> : null,
-      warmed ? (
-        <Text dimColor>
-          Warmed {fmtDur(now - warmed.at)} ago
-          {warmed.hitRate !== null ? ` · ${Math.round(warmed.hitRate * 100)}% hit` : ''}
-          {keepWarm === 'auto' ? ` · auto ${warmed.count}/${keepWarmMax}` : ''}
-        </Text>
-      ) : null,
+      warmed ? <Text dimColor>{warmedLine(warmed, now, keepWarm === 'auto' ? keepWarmMax : null)}</Text> : null,
     ].filter(x => x !== null)
 
     return (
@@ -517,7 +490,7 @@ export const register: Register = (on, options) => {
           <Box flexDirection="row" alignItems="center" columnGap={3} flexWrap="wrap">
             {[cache, ...limits]}
           </Box>
-          <Text dimColor>{meta}</Text>
+          <Text dimColor>{metaLine(usage.cost?.usd ?? null, prompts, now - usage.startedAt)}</Text>
         </Box>
         {detail.length > 0 ? (
           <Box flexDirection="row" columnGap={2} flexWrap="wrap">

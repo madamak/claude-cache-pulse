@@ -409,7 +409,8 @@ export const register: Register = (on, options) => {
     const last = await read($, lastTurn)
     const compactCount = await read($, compactions)
     const warmed = await read($, warm)
-    const stake = (await read($, lastRequest))?.stake ?? null
+    const previous = await read($, lastRequest)
+    const stake = previous?.stake ?? null
     const totals = ledgerLine(await read($, ledger), compactCount, last?.hitRate ?? null)
     const broke = await read($, lastBreak)
     const prompts = await $.session.turns()
@@ -465,7 +466,7 @@ export const register: Register = (on, options) => {
         </Text>
         {stake !== null && s.kind === 'cold' && !isWarmingNow ? (
           <Text color="warning">
-            next prompt rewrites {fmtTokens(stake)} tokens: ≈{Math.floor(coldRatio(ttl))}× the API cost of a warm prompt
+            next prompt rewrites {fmtTokens(stake)} tokens: ≈{Math.floor(coldRatio(ttl, previous?.model ?? ''))}× the API cost of a warm prompt
           </Text>
         ) : null}
         {isWarmingNow ? (

@@ -224,12 +224,24 @@ export function fmtTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(1)}M`
 }
 
+// A cache read against base input, at API list prices: 0.1× on most models,
+// less on those whose cache reads are priced lower.
+const READ_RATES: [RegExp, number][] = [
+  [/opus-5-5/, 0.05],
+  [/(fable|mythos)-5-1/, 0.025],
+]
+
+export function readRate(model: string): number {
+  return READ_RATES.find(([pattern]) => pattern.test(model))?.[1] ?? 0.1
+}
+
 // What a cold restart costs against a warm prompt, at API list prices: a
-// cache write is 2× base input for a 1h entry and 1.25× for a 5m one, a
-// cache read 0.1×. How a subscription weighs them against its limits is not
-// published, so the band says it relative to a warm prompt, never in money.
-export function coldRatio(ttl: number): number {
-  return (ttl <= 5 * 60_000 ? 1.25 : 2) / 0.1
+// cache write is 2× base input for a 1h entry and 1.25× for a 5m one, over
+// the model's cache-read rate. How a subscription weighs them against its
+// limits is not published, so the band says it relative to a warm prompt,
+// never in money.
+export function coldRatio(ttl: number, model: string): number {
+  return (ttl <= 5 * 60_000 ? 1.25 : 2) / readRate(model)
 }
 
 // The tokens a request was answered over, cached or not.

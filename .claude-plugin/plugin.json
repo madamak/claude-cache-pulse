@@ -1,7 +1,7 @@
 {
   "name": "cache-pulse",
   "description": "Prompt-cache status for Claude Code: a countdown above the prompt (and in the terminal footer), the tokens at stake and what a cold restart costs, cache breaks with what was measured and what the request shows changed, session cache totals, a Keep warm button with an optional capped auto-warm, and an expiry warning.",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "author": {
     "name": "Adam Makhlouf"
   },

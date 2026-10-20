@@ -37,7 +37,7 @@ The band answers one question: what happens if you come back later?
 **Band above the prompt**, on the desktop app's Code tab and in the terminal:
 
 - **Cache ring**: hot, live or cold, the time left against the TTL, and the tokens at stake: what the next prompt re-sends. **Keep warm** while it is hot.
-- **Cold cache**: `next prompt rewrites 182k tokens: ≈20× the API cost of a warm prompt`. At API list prices a cache write costs 2× base input for a 1h entry (1.25× for 5m) and a read 0.1×, so a cold restart costs about 20× a warm prompt (12× for 5m). How a subscription weighs cache tokens against its usage limits is not published, so the band gives the ratio, not a price.
+- **Cold cache**: `next prompt rewrites 182k tokens: ≈20× the API cost of a warm prompt`. At API list prices a cache write costs 2× base input for a 1h entry (1.25× for 5m) and a read 0.1× on most models, so a cold restart costs about 20× a warm prompt (12× for 5m). Cache reads cost less on some models, which widens the gap: 0.05× on Opus 5.5 (40×, 25× for 5m) and 0.025× on Fable 5.1 (80×, 50× for 5m). The band uses the model of the last request; one it does not list gets the 0.1× rate. How a subscription weighs cache tokens against its usage limits is not published, so the band gives the ratio, not a price.
 - **Cache hit**: the share of input read from cache, for the last turn and as the session average (weighted by tokens, so a long turn counts more than a short one); then cold starts and cache breaks with the tokens they rewrote, and compactions.
 - **Cache break**: a request that lost a warm cache (see below), until your next prompt. A toast says it as it happens.
 - **Warmed** after a Keep warm: when, and how much of it was read from cache.

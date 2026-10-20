@@ -37,8 +37,13 @@ test('durations and token counts format', async () => {
   expect(fmtTokens(950)).toBe('950')
   expect(fmtTokens(182_400)).toBe('182k')
   expect(fmtTokens(1_250_000)).toBe('1.3M')
-  expect(coldRatio(HOUR)).toBe(20)
-  expect(coldRatio(5 * 60_000)).toBe(12.5)
+  expect(coldRatio(HOUR, 'claude-sonnet-5-5')).toBe(20)
+  expect(coldRatio(5 * 60_000, 'claude-sonnet-5-5')).toBe(12.5)
+  // Cache reads priced below 0.1× base input widen the gap.
+  expect(coldRatio(HOUR, 'claude-opus-5-5')).toBe(40)
+  expect(coldRatio(HOUR, 'claude-fable-5-1')).toBe(80)
+  expect(coldRatio(HOUR, 'claude-opus-5')).toBe(20)
+  expect(coldRatio(HOUR, '')).toBe(20)
 })
 
 const use = (read: number, written: number, input = 10, output = 500) => ({
@@ -609,5 +614,27 @@ test('a turn you start while the ping runs still counts, and the ping\'s own doe
   await pressing
   expect(await ui.find({ type: 'Text', text: 'Cache live' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: 'Cache hit: session avg 99%' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the cold ratio follows the model of the last request', async ($, on) => {
+  mock.clock(on, { now: 10 * HOUR })
+  on('session.usage', () => ({ value: { startedAt: 9 * HOUR, context: { window: 200_000 }, rateLimits: [] } }))
+  on('session.turns', () => ({ value: 2 }))
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Box } = $.ui.resolve(e)
+
+    return <Box />
+  })
+  on('classic.SessionStart', () => ({}))
+  await $.classic.SessionStart({
+    source: 'resume',
+    seconds_since_last_response: 2 * 3600,
+    context_tokens: 90_000,
+    model: 'claude-opus-5-5',
+  })
+
+  const ui = await $.ui.mount({ plugin: 'cache-pulse', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+  expect(await ui.find({ type: 'Text', text: /next prompt rewrites 90k tokens: ≈40× the API cost of a warm prompt/ })).toBeDefined()
   await ui.unmount()
 })
